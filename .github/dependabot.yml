@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Le action sono pinnate al SHA: senza aggiornamenti automatici resterebbero
+  # ferme per sempre. Dependabot aggiorna SHA e commento insieme.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: docker

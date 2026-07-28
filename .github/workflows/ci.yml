@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# Permessi minimi di default: il job che pubblica se li allarga da solo.
+permissions:
+  contents: read
+
+# Una push che arriva mentre la precedente e' ancora in corso la annulla.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  quality:
+    name: Lint e test
+    runs-on: ubuntu-latest
+    steps:
+      # Le action sono pinnate al commit SHA: un tag puo' essere spostato,
+      # un SHA no. Il commento accanto tiene leggibile la versione.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Installa le dipendenze
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  image:
+    name: Build immagine Docker
+    # L'immagine si costruisce solo se lint e test passano.
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # QEMU serve solo per la build arm64 (VPS ARM, Raspberry Pi).
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Calcola tag e label
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Build solo amd64 caricata nel daemon locale: serve per lo smoke test
+      # qui sotto, che su un'immagine multi-arch non sarebbe eseguibile.
+      - name: Build di verifica (amd64)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: mio-bot:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Prova che l'immagine parte davvero: senza token il bot deve uscire
+      # con codice 1 e il messaggio di errore leggibile, non con uno stack trace.
+      - name: Smoke test dell'immagine
+        run: |
+          set -uo pipefail
+          output=$(docker run --rm mio-bot:ci 2>&1) && esito=0 || esito=$?
+          echo "$output"
+          if [ "$esito" -eq 0 ]; then
+            echo "::error::L'immagine doveva uscire con codice non zero senza DISCORD_TOKEN"
+            exit 1
+          fi
+          echo "$output" | grep -q "Variabile d'ambiente mancante: DISCORD_TOKEN" || {
+            echo "::error::Messaggio di errore atteso non trovato nell'output"
+            exit 1
+          }
+          echo "Immagine avviata correttamente, uscita con codice $esito come previsto."
+
+      # Le PR dai fork non hanno accesso ai segreti: si costruisce e basta.
+      - name: Login su GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build multi-arch e push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # I valori passano da env e non da interpolazione diretta nello script:
+      # i tag derivano dal nome del branch, che e' input non fidato.
+      - name: Riepilogo
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Immagine"
+            echo ""
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              echo "Build di verifica completata, nessuna pubblicazione per le pull request."
+            else
+              echo "Pubblicata su \`$IMAGE_REF\` con i tag:"
+              echo ""
+              echo '```'
+              echo "$TAGS"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

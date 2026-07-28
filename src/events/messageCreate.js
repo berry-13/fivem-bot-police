@@ -1,3 +1,7 @@
+'use strict';
+
+const { safeReply } = require('../lib/safe-reply');
+
 module.exports = {
   name: 'messageCreate',
   async execute(message, client) {
@@ -5,7 +9,8 @@ module.exports = {
     if (!message.content.startsWith(client.prefix)) return;
 
     const args = message.content.slice(client.prefix.length).trim().split(/ +/);
-    const commandName = args.shift().toLowerCase();
+    const commandName = args.shift()?.toLowerCase();
+    if (!commandName) return;
 
     const command = client.prefixCommands.get(commandName);
     if (!command) return;
@@ -13,8 +18,8 @@ module.exports = {
     try {
       await command.execute(message, args, client);
     } catch (error) {
-      console.error(error);
-      message.reply('Errore durante l\'esecuzione del comando.');
+      console.error(`Errore nel comando prefix "${commandName}":`, error);
+      await safeReply(message, "Errore durante l'esecuzione del comando.");
     }
   },
 };
