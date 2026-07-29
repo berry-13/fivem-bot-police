@@ -119,7 +119,11 @@ test('interactionCreate ignora le interazioni che non sono comandi', async () =>
   const client = clientConComando('ping', () => {
     throw new Error('non deve essere chiamato');
   });
-  const interaction = { isChatInputCommand: () => false };
+  const interaction = {
+    isChatInputCommand: () => false,
+    isStringSelectMenu: () => false,
+    isButton: () => false,
+  };
 
   await assert.doesNotReject(() => interactionCreate.execute(interaction, client));
 });

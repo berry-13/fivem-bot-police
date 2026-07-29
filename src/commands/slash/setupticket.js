@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const ticketConfig = require('../../config/tickets');
 
 module.exports = {
@@ -31,6 +31,6 @@ module.exports = {
     const row = new ActionRowBuilder().addComponents(selectMenu);
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
-    await interaction.reply({ content: '✅ Pannello ticket inviato!', ephemeral: true });
+    await interaction.reply({ content: '✅ Pannello ticket inviato!', flags: MessageFlags.Ephemeral });
   },
 };

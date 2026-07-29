@@ -13,6 +13,12 @@ const {
 const ticketConfig = require('../config/tickets');
 const { safeInteractionReply } = require('../lib/safe-reply');
 
+// Discord pagina la cronologia a 100 messaggi per volta. Senza un tetto un
+// canale molto lungo significa centinaia di chiamate in fila con l'interazione
+// appesa e l'intera trascrizione in memoria.
+const PAGE_SIZE = 100;
+const MAX_TRANSCRIPT_MESSAGES = 5000;
+
 module.exports = {
   name: 'interactionCreate',
   async execute(interaction, client) {
@@ -33,16 +39,33 @@ module.exports = {
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket-select') {
-      await handleTicketOpen(interaction);
+      await runTicketHandler(interaction, handleTicketOpen, "l'apertura");
       return;
     }
 
     if (interaction.isButton() && interaction.customId === 'ticket-close') {
-      await handleTicketClose(interaction);
+      await runTicketHandler(interaction, handleTicketClose, 'la chiusura');
       return;
     }
   },
 };
+
+/**
+ * Stessa rete di sicurezza che avvolge gli slash command. discord.js non
+ * aspetta il nostro handler: un throw qui diventa una unhandled rejection e
+ * lascia l'utente con l'interazione ferma su "sta pensando" per sempre.
+ */
+async function runTicketHandler(interaction, handler, fase) {
+  try {
+    await handler(interaction);
+  } catch (error) {
+    console.error(`Errore durante ${fase} del ticket:`, error);
+    await safeInteractionReply(interaction, {
+      content: `❌ Errore durante ${fase} del ticket.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
 
 async function handleTicketOpen(interaction) {
   const categoryValue = interaction.values[0];
@@ -115,11 +138,18 @@ async function handleTicketOpen(interaction) {
   const row = new ActionRowBuilder().addComponents(closeButton);
   const pingRoles = resolvedRoles.map((r) => `<@&${r.id}>`).join(' ');
 
-  await ticketChannel.send({
-    content: `${interaction.user} ${pingRoles}`,
-    embeds: [welcomeEmbed],
-    components: [row],
-  });
+  // Il canale esiste gia': se il benvenuto non parte lo segnaliamo nei log ma
+  // diciamo comunque all'utente dov'e' il suo ticket, altrimenti resta con un
+  // canale aperto e nessuna indicazione.
+  try {
+    await ticketChannel.send({
+      content: `${interaction.user} ${pingRoles}`,
+      embeds: [welcomeEmbed],
+      components: [row],
+    });
+  } catch (error) {
+    console.error('Ticket creato ma messaggio di benvenuto non inviato:', error);
+  }
 
   await interaction.editReply({ content: `✅ Ticket creato: ${ticketChannel}` });
 }
@@ -158,6 +188,8 @@ async function handleTicketClose(interaction) {
     }
   }
 
+  let trascrizioneSalvata = false;
+
   if (logChannel) {
     const logEmbed = new EmbedBuilder()
       .setColor(0x2b2d31)
@@ -168,10 +200,22 @@ async function handleTicketClose(interaction) {
       )
       .setTimestamp();
 
-    await logChannel.send({ embeds: [logEmbed], files: [attachment] });
+    // Un invio fallito (allegato troppo grande, permessi mancanti) non deve
+    // impedire la chiusura: senza questo catch il ticket resta aperto per
+    // sempre perche' non arriviamo mai al delete qui sotto.
+    try {
+      await logChannel.send({ embeds: [logEmbed], files: [attachment] });
+      trascrizioneSalvata = true;
+    } catch (error) {
+      console.error('Impossibile inviare la trascrizione nel canale di log:', error);
+    }
   }
 
-  await interaction.editReply('🔒 Ticket in chiusura tra 5 secondi... la trascrizione è stata salvata.');
+  await interaction.editReply(
+    trascrizioneSalvata
+      ? '🔒 Ticket in chiusura tra 5 secondi... la trascrizione è stata salvata.'
+      : '🔒 Ticket in chiusura tra 5 secondi... non sono riuscito a salvare la trascrizione.'
+  );
 
   setTimeout(() => {
     channel.delete().catch(console.error);
@@ -179,20 +223,25 @@ async function handleTicketClose(interaction) {
 }
 
 async function fetchAllMessages(channel) {
-  let allMessages = [];
+  const allMessages = [];
   let lastId;
 
-  while (true) {
-    const options = { limit: 100 };
+  while (allMessages.length < MAX_TRANSCRIPT_MESSAGES) {
+    const options = { limit: PAGE_SIZE };
     if (lastId) options.before = lastId;
 
     const messages = await channel.messages.fetch(options);
     if (messages.size === 0) break;
 
-    allMessages = allMessages.concat(Array.from(messages.values()));
-    lastId = messages.last().id;
+    allMessages.push(...messages.values());
 
-    if (messages.size < 100) break;
+    const oldest = messages.last();
+    // Se l'id piu' vecchio non avanza la pagina dopo sarebbe identica a questa:
+    // meglio uscire che girare nel while all'infinito.
+    if (!oldest || oldest.id === lastId) break;
+    lastId = oldest.id;
+
+    if (messages.size < PAGE_SIZE) break;
   }
 
   return allMessages;

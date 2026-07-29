@@ -17,7 +17,12 @@ async function safeReply(message, payload) {
 
 async function safeInteractionReply(interaction, payload) {
   try {
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred && !interaction.replied) {
+      // Dopo un deferReply l'utente vede "sta pensando" finche' qualcuno non
+      // riempie quella risposta: followUp manda un secondo messaggio e lascia
+      // lo spinner appeso fino al timeout, editReply lo chiude.
+      await interaction.editReply(payload);
+    } else if (interaction.replied || interaction.deferred) {
       await interaction.followUp(payload);
     } else {
       await interaction.reply(payload);

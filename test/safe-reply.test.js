@@ -64,6 +64,21 @@ test('safeInteractionReply usa followUp se ha gia\' risposto', async () => {
   assert.deepEqual(chiamate, ['followUp']);
 });
 
+test('safeInteractionReply usa editReply dopo un defer, per chiudere lo spinner', async () => {
+  const chiamate = [];
+  const interaction = {
+    replied: false,
+    deferred: true,
+    reply: async () => chiamate.push('reply'),
+    followUp: async () => chiamate.push('followUp'),
+    editReply: async () => chiamate.push('editReply'),
+  };
+
+  await safeInteractionReply(interaction, { content: 'ok' });
+
+  assert.deepEqual(chiamate, ['editReply']);
+});
+
 test('safeInteractionReply non propaga il rejection (interazione scaduta)', async () => {
   const interaction = {
     replied: false,
