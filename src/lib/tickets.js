@@ -2,6 +2,7 @@
 
 const { ChannelType, PermissionFlagsBits, EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const ticketConfig = require('../config/tickets');
+const bandoConfig = require('../config/bandi');
 
 // Discord pagina la cronologia a 100 messaggi per volta. Senza un tetto un
 // canale molto lungo significa centinaia di chiamate in fila con chi chiude il
@@ -49,12 +50,19 @@ function isTicketChannel(channel) {
   return name.startsWith(`${CHANNEL_PREFIX}-`);
 }
 
-/** Staff = chi gestisce i canali, oppure chi ha uno dei ruoli in config/tickets.js. */
+/**
+ * Staff = chi gestisce i canali, oppure chi ha uno dei ruoli elencati in
+ * config/tickets.js o config/bandi.js. Senza i ruoli dei bandi un Capo Reparto
+ * non potrebbe chiudere il ticket di una candidatura al proprio reparto.
+ */
 function isTicketStaff(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionFlagsBits.ManageChannels)) return true;
 
-  const ruoliStaff = new Set(ticketConfig.categories.flatMap(c => c.roles));
+  const ruoliStaff = new Set([
+    ...ticketConfig.categories.flatMap(c => c.roles),
+    ...bandoConfig.categories.flatMap(c => c.roles),
+  ]);
   const ruoliMembro = member.roles?.cache;
   if (!ruoliMembro) return false;
 

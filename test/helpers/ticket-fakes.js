@@ -54,14 +54,14 @@ function fakeMember({ id = 'user-2', tag = 'luigi#0002', roles = [], manageChann
   };
 }
 
-function fakeGuild({ createChannel, logChannel, membri = [] } = {}) {
+function fakeGuild({ createChannel, logChannel, membri = [], ruoli = CATEGORIA.roles } = {}) {
   const creati = [];
 
   return {
     creati,
     roles: {
       everyone: { id: 'everyone' },
-      cache: CATEGORIA.roles.map((name, i) => ({ id: `role-${i}`, name })),
+      cache: ruoli.map((name, i) => ({ id: `role-${i}`, name })),
     },
     members: {
       fetch: async id => {

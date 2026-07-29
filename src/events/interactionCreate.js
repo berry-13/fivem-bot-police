@@ -10,6 +10,7 @@ const {
   MessageFlags,
 } = require('discord.js');
 const ticketConfig = require('../config/tickets');
+const bandoConfig = require('../config/bandi');
 const { safeInteractionReply } = require('../lib/safe-reply');
 const {
   archiveTicket,
@@ -37,8 +38,9 @@ module.exports = {
       return;
     }
 
-    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket-select') {
-      await runTicketHandler(interaction, handleTicketOpen, "l'apertura");
+    if (interaction.isStringSelectMenu() && PANNELLI[interaction.customId]) {
+      const pannello = PANNELLI[interaction.customId];
+      await runTicketHandler(interaction, (i) => handleTicketOpen(i, pannello), "l'apertura");
       return;
     }
 
@@ -46,6 +48,30 @@ module.exports = {
       await runTicketHandler(interaction, handleTicketClose, 'la chiusura');
       return;
     }
+  },
+};
+
+/**
+ * Ticket generali e bandi aprono lo stesso tipo di canale, cambiano solo le
+ * categorie disponibili e il testo di benvenuto. Tenerli in una mappa evita di
+ * duplicare tutta l'apertura del ticket per il secondo pannello.
+ */
+const PANNELLI = {
+  'ticket-select': {
+    categories: ticketConfig.categories,
+    titolo: (label) => `🎫 Ticket: ${label}`,
+    corpo: (utente, label) =>
+      `Ciao ${utente}, grazie per aver aperto un ticket.\n` +
+      `Categoria: **${label}**\n\n` +
+      'Spiega qui il motivo della tua richiesta, un membro competente ti risponderà a breve.',
+  },
+  'bando-select': {
+    categories: bandoConfig.categories,
+    titolo: (label) => `📋 Candidatura: ${label}`,
+    corpo: (utente, label) =>
+      `Ciao ${utente}, grazie per esserti candidato/a.\n` +
+      `Bando: **${label}**\n\n` +
+      'Presenta qui la tua candidatura, il Capo Reparto o il Vice Capo Reparto ti risponderà a breve.',
   },
 };
 
@@ -66,9 +92,9 @@ async function runTicketHandler(interaction, handler, fase) {
   }
 }
 
-async function handleTicketOpen(interaction) {
+async function handleTicketOpen(interaction, pannello) {
   const categoryValue = interaction.values[0];
-  const category = ticketConfig.categories.find((c) => c.value === categoryValue);
+  const category = pannello.categories.find((c) => c.value === categoryValue);
   if (!category) {
     return interaction.reply({ content: '❌ Categoria non valida.', flags: MessageFlags.Ephemeral });
   }
@@ -82,7 +108,11 @@ async function handleTicketOpen(interaction) {
     .filter(Boolean);
 
   if (resolvedRoles.length !== category.roles.length) {
-    console.warn(`⚠️ Alcuni ruoli per "${category.label}" non trovati. Controlla i nomi in src/config/tickets.js`);
+    const mancanti = category.roles.filter((nome) => !guild.roles.cache.some((r) => r.name === nome));
+    console.warn(
+      `⚠️ Ruoli non trovati per "${category.label}": ${mancanti.map((n) => `"${n}"`).join(', ')}. ` +
+      'Controlla i nomi in src/config/tickets.js o src/config/bandi.js (emoji e spazi compresi).'
+    );
   }
 
   const channelName = buildTicketChannelName(category, interaction.user.username);
@@ -118,12 +148,8 @@ async function handleTicketOpen(interaction) {
 
   const welcomeEmbed = new EmbedBuilder()
     .setColor(0xE91E63)
-    .setTitle(`🎫 Ticket: ${category.label}`)
-    .setDescription(
-      `Ciao ${interaction.user}, grazie per aver aperto un ticket.\n` +
-      `Categoria: **${category.label}**\n\n` +
-      `Spiega qui il motivo della tua richiesta, un membro competente ti risponderà a breve.`
-    );
+    .setTitle(pannello.titolo(category.label))
+    .setDescription(pannello.corpo(interaction.user, category.label));
 
   const closeButton = new ButtonBuilder()
     .setCustomId('ticket-close')
