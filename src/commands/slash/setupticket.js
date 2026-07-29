@@ -13,7 +13,7 @@ module.exports = {
       .setDescription(
         'Benvenuto/a Nella Richiesta Ticket.\n\n' +
         'Seleziona una delle categorie elencate qui sotto nel menù a tendina!\n\n' +
-        'In caso di riscontro di anomalie puoi sempre compilare il Modulo Assistenza per ricevere supporto da parte del nostro Staff'
+        'In caso di riscontro di anomalie puoi sempre scrivere in generale per contattare un superiore.'
       );
 
     const selectMenu = new StringSelectMenuBuilder()

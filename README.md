@@ -78,11 +78,42 @@ src/
     env.js              Lettura delle variabili d'ambiente con errori leggibili
     loaders.js          Caricamento e validazione di comandi ed eventi
     safe-reply.js       Risposte che non propagano mai un rejection
+    tickets.js          Logica dei ticket condivisa da bottone e comandi
+  config/
+    tickets.js          Categorie dei ticket e nome del canale di log
   events/               Un file per evento del gateway
   commands/slash/       Slash command: { data, execute }
   commands/prefix/      Comandi testuali: { name, execute }
 test/                   Test con node:test, nessuna dipendenza esterna
 ```
+
+## Sistema ticket
+
+`/setup-ticket` (solo amministratori) manda nel canale corrente il pannello con
+il menu a tendina delle categorie. Le categorie, i ruoli da avvisare e il nome
+del canale di log si cambiano in `src/config/tickets.js`.
+
+Chi sceglie una categoria si ritrova un canale privato visibile solo a lui, al
+bot e ai ruoli di quella categoria. Il nome porta la categoria in chiaro
+(`ticket-richiesta-esame-mario-rossi`) e viene accorciato a 90 caratteri se il
+nome utente e' lungo. Con `TICKET_CATEGORY_ID` valorizzato i canali finiscono
+sotto quella categoria di Discord.
+
+Alla chiusura la cronologia viene salvata come allegato `.txt` nel canale
+`ticket-logs`, creato al volo se non esiste, e il canale viene eliminato dopo
+cinque secondi. Se la trascrizione non parte il ticket si chiude lo stesso e il
+messaggio lo dice invece di promettere un archivio che non c'e'.
+
+| Azione | Chi puo' usarla |
+| --- | --- |
+| Bottone **Chiudi Ticket** | chiunque veda il ticket |
+| `!close` | chiunque veda il ticket, come il bottone |
+| `!add @utente` | solo lo staff |
+
+`!add` accetta la menzione o l'id incollato a mano. Per staff si intende chi ha
+il permesso Gestire i canali oppure uno dei ruoli elencati in
+`src/config/tickets.js`. Entrambi i comandi funzionano solo dentro un canale
+ticket e si rifiutano di toccare `ticket-logs`.
 
 ## Aggiungere un comando
 

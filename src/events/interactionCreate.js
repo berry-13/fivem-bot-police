@@ -7,17 +7,16 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  AttachmentBuilder,
   MessageFlags,
 } = require('discord.js');
 const ticketConfig = require('../config/tickets');
 const { safeInteractionReply } = require('../lib/safe-reply');
-
-// Discord pagina la cronologia a 100 messaggi per volta. Senza un tetto un
-// canale molto lungo significa centinaia di chiamate in fila con l'interazione
-// appesa e l'intera trascrizione in memoria.
-const PAGE_SIZE = 100;
-const MAX_TRANSCRIPT_MESSAGES = 5000;
+const {
+  archiveTicket,
+  buildTicketChannelName,
+  closingMessage,
+  scheduleTicketDeletion,
+} = require('../lib/tickets');
 
 module.exports = {
   name: 'interactionCreate',
@@ -86,10 +85,7 @@ async function handleTicketOpen(interaction) {
     console.warn(`⚠️ Alcuni ruoli per "${category.label}" non trovati. Controlla i nomi in src/config/tickets.js`);
   }
 
-  const channelName = `ticket-${interaction.user.username}`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .slice(0, 90);
+  const channelName = buildTicketChannelName(category, interaction.user.username);
 
   const permissionOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -158,91 +154,12 @@ async function handleTicketClose(interaction) {
   await interaction.deferReply();
 
   const channel = interaction.channel;
-  const guild = interaction.guild;
+  const trascrizioneSalvata = await archiveTicket(channel, {
+    guild: interaction.guild,
+    closedBy: interaction.user,
+  });
 
-  const messages = await fetchAllMessages(channel);
-  const transcript = messages
-    .reverse()
-    .map((m) => {
-      const time = new Date(m.createdTimestamp).toLocaleString('it-IT');
-      return `[${time}] ${m.author.tag}: ${m.content}`;
-    })
-    .join('\n');
+  await interaction.editReply(closingMessage(trascrizioneSalvata));
 
-  const buffer = Buffer.from(transcript || 'Nessun messaggio.', 'utf-8');
-  const attachment = new AttachmentBuilder(buffer, { name: `${channel.name}.txt` });
-
-  let logChannel = guild.channels.cache.find(
-    (c) => c.name === ticketConfig.logChannelName && c.type === ChannelType.GuildText
-  );
-
-  if (!logChannel) {
-    try {
-      logChannel = await guild.channels.create({
-        name: ticketConfig.logChannelName,
-        type: ChannelType.GuildText,
-        permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }],
-      });
-    } catch (error) {
-      console.error('Impossibile creare il canale ticket-logs:', error);
-    }
-  }
-
-  let trascrizioneSalvata = false;
-
-  if (logChannel) {
-    const logEmbed = new EmbedBuilder()
-      .setColor(0x2b2d31)
-      .setTitle('📁 Ticket chiuso')
-      .addFields(
-        { name: 'Canale', value: `#${channel.name}`, inline: true },
-        { name: 'Chiuso da', value: `${interaction.user.tag}`, inline: true }
-      )
-      .setTimestamp();
-
-    // Un invio fallito (allegato troppo grande, permessi mancanti) non deve
-    // impedire la chiusura: senza questo catch il ticket resta aperto per
-    // sempre perche' non arriviamo mai al delete qui sotto.
-    try {
-      await logChannel.send({ embeds: [logEmbed], files: [attachment] });
-      trascrizioneSalvata = true;
-    } catch (error) {
-      console.error('Impossibile inviare la trascrizione nel canale di log:', error);
-    }
-  }
-
-  await interaction.editReply(
-    trascrizioneSalvata
-      ? '🔒 Ticket in chiusura tra 5 secondi... la trascrizione è stata salvata.'
-      : '🔒 Ticket in chiusura tra 5 secondi... non sono riuscito a salvare la trascrizione.'
-  );
-
-  setTimeout(() => {
-    channel.delete().catch(console.error);
-  }, 5000);
-}
-
-async function fetchAllMessages(channel) {
-  const allMessages = [];
-  let lastId;
-
-  while (allMessages.length < MAX_TRANSCRIPT_MESSAGES) {
-    const options = { limit: PAGE_SIZE };
-    if (lastId) options.before = lastId;
-
-    const messages = await channel.messages.fetch(options);
-    if (messages.size === 0) break;
-
-    allMessages.push(...messages.values());
-
-    const oldest = messages.last();
-    // Se l'id piu' vecchio non avanza la pagina dopo sarebbe identica a questa:
-    // meglio uscire che girare nel while all'infinito.
-    if (!oldest || oldest.id === lastId) break;
-    lastId = oldest.id;
-
-    if (messages.size < PAGE_SIZE) break;
-  }
-
-  return allMessages;
+  scheduleTicketDeletion(channel);
 }

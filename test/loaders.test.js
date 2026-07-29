@@ -83,6 +83,9 @@ test('i comandi e gli eventi reali del progetto si caricano senza problemi', () 
   assert.deepEqual(events.problems, []);
 
   assert.ok(slash.loaded.some(command => command.data.name === 'ping'));
+  assert.ok(slash.loaded.some(command => command.data.name === 'setup-ticket'));
   assert.ok(prefix.loaded.some(command => command.name === 'ping'));
+  assert.ok(prefix.loaded.some(command => command.name === 'close'));
+  assert.ok(prefix.loaded.some(command => command.name === 'add'));
   assert.ok(events.loaded.some(event => event.name === 'clientReady'));
 });
