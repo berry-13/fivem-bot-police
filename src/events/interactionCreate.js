@@ -1,3 +1,5 @@
+'use strict';
+
 const {
   ChannelType,
   PermissionFlagsBits,
@@ -6,8 +8,10 @@ const {
   ButtonBuilder,
   ButtonStyle,
   AttachmentBuilder,
+  MessageFlags,
 } = require('discord.js');
 const ticketConfig = require('../config/tickets');
+const { safeInteractionReply } = require('../lib/safe-reply');
 
 module.exports = {
   name: 'interactionCreate',
@@ -15,16 +19,15 @@ module.exports = {
     if (interaction.isChatInputCommand()) {
       const command = client.slashCommands.get(interaction.commandName);
       if (!command) return;
+
       try {
         await command.execute(interaction, client);
       } catch (error) {
-        console.error(error);
-        const errorMessage = { content: '❌ Errore durante l\'esecuzione del comando.', ephemeral: true };
-        if (interaction.replied || interaction.deferred) {
-          await interaction.followUp(errorMessage);
-        } else {
-          await interaction.reply(errorMessage);
-        }
+        console.error(`Errore nello slash command "${interaction.commandName}":`, error);
+        await safeInteractionReply(interaction, {
+          content: "❌ Errore durante l'esecuzione del comando.",
+          flags: MessageFlags.Ephemeral,
+        });
       }
       return;
     }
@@ -45,10 +48,10 @@ async function handleTicketOpen(interaction) {
   const categoryValue = interaction.values[0];
   const category = ticketConfig.categories.find((c) => c.value === categoryValue);
   if (!category) {
-    return interaction.reply({ content: '❌ Categoria non valida.', ephemeral: true });
+    return interaction.reply({ content: '❌ Categoria non valida.', flags: MessageFlags.Ephemeral });
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const guild = interaction.guild;
 

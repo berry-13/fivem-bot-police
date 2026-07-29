@@ -1,2 +1,11 @@
 node_modules/
+
+# Segreti: .env.example e' l'unico file di ambiente da versionare.
 .env
+.env.*
+!.env.example
+
+npm-debug.log*
+logs/
+coverage/
+.DS_Store

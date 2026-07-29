@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    container_name: mio-bot
+    # Il token viene letto a runtime, non e' mai dentro l'immagine.
+    env_file: .env
+    restart: unless-stopped
+    # init: true fa girare un reaper come PID 1 che inoltra i segnali,
+    # cosi' "docker compose stop" arriva davvero a SIGTERM nel bot.
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

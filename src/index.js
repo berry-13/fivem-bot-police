@@ -1,62 +1,95 @@
-const fs = require('fs');
-const path = require('path');
-const { Client, GatewayIntentBits, Collection, Partials } = require('discord.js');
-require('dotenv').config();
+'use strict';
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-  ],
-  partials: [Partials.Message, Partials.Channel],
+const { Client, GatewayIntentBits, Collection, Partials } = require('discord.js');
+// quiet: true silenzia i suggerimenti promozionali di dotenv nei log.
+require('dotenv').config({ quiet: true });
+
+const { requireEnv, optionalEnv } = require('./lib/env');
+const { loadSlashCommands, loadPrefixCommands, loadEvents } = require('./lib/loaders');
+const { registerShutdown } = require('./lib/shutdown');
+
+// Rete di sicurezza: senza questi handler una promise rifiutata termina il
+// processo con uno stack trace grezzo (comportamento di default da Node 15).
+process.on('unhandledRejection', error => {
+  console.error('Promise rejection non gestita:', error);
 });
 
-// Collection per gli slash command
-client.slashCommands = new Collection();
-// Collection per i comandi prefix (!comando)
-client.prefixCommands = new Collection();
+process.on('uncaughtException', error => {
+  console.error('Eccezione non gestita, chiusura:', error);
+  process.exit(1);
+});
 
-const PREFIX = '!';
-client.prefix = PREFIX;
-
-// Carica gli slash command
-const slashPath = path.join(__dirname, 'commands', 'slash');
-if (fs.existsSync(slashPath)) {
-  const slashFiles = fs.readdirSync(slashPath).filter(file => file.endsWith('.js'));
-  for (const file of slashFiles) {
-    const command = require(path.join(slashPath, file));
-    if (command.data && command.execute) {
-      client.slashCommands.set(command.data.name, command);
-    }
-  }
+function createClient() {
+  return new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      // Necessario perche' i partial sotto abbiano senso: senza questo intent
+      // i messaggi diretti non arrivano proprio.
+      GatewayIntentBits.DirectMessages,
+    ],
+    // Servono a ricevere i DM in canali non ancora in cache.
+    partials: [Partials.Message, Partials.Channel],
+  });
 }
 
-// Carica i comandi prefix
-const prefixPath = path.join(__dirname, 'commands', 'prefix');
-if (fs.existsSync(prefixPath)) {
-  const prefixFiles = fs.readdirSync(prefixPath).filter(file => file.endsWith('.js'));
-  for (const file of prefixFiles) {
-    const command = require(path.join(prefixPath, file));
-    if (command.name && command.execute) {
-      client.prefixCommands.set(command.name, command);
-    }
+function registerCommands(client) {
+  client.slashCommands = new Collection();
+  client.prefixCommands = new Collection();
+
+  const slash = loadSlashCommands();
+  for (const command of slash.loaded) {
+    client.slashCommands.set(command.data.name, command);
   }
+
+  const prefix = loadPrefixCommands();
+  for (const command of prefix.loaded) {
+    client.prefixCommands.set(command.name, command);
+  }
+
+  // I comandi malformati vengono saltati ma mai in silenzio: un comando che
+  // sparisce senza una riga di log e' un'ora persa a caccia del motivo.
+  for (const problem of [...slash.problems, ...prefix.problems]) {
+    console.warn(`Comando ignorato -> ${problem}`);
+  }
+
+  console.log(
+    `Caricati ${client.slashCommands.size} slash command e ${client.prefixCommands.size} comandi prefix.`,
+  );
 }
 
-// Carica gli eventi
-const eventsPath = path.join(__dirname, 'events');
-if (fs.existsSync(eventsPath)) {
-  const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
-  for (const file of eventFiles) {
-    const event = require(path.join(eventsPath, file));
+function registerEvents(client) {
+  const { loaded, problems } = loadEvents();
+
+  for (const event of loaded) {
+    const handler = (...args) => event.execute(...args, client);
     if (event.once) {
-      client.once(event.name, (...args) => event.execute(...args, client));
+      client.once(event.name, handler);
     } else {
-      client.on(event.name, (...args) => event.execute(...args, client));
+      client.on(event.name, handler);
     }
+  }
+
+  for (const problem of problems) {
+    console.warn(`Evento ignorato -> ${problem}`);
   }
 }
 
-client.login(process.env.DISCORD_TOKEN);
+async function main() {
+  const token = requireEnv('DISCORD_TOKEN', 'Copia .env.example in .env e inserisci il token del bot.');
+
+  const client = createClient();
+  client.prefix = optionalEnv('COMMAND_PREFIX') ?? '!';
+
+  registerCommands(client);
+  registerEvents(client);
+  registerShutdown(client);
+
+  await client.login(token);
+}
+
+main().catch(error => {
+  console.error(`Avvio fallito: ${error.message}`);
+  process.exit(1);
+});
