@@ -5,6 +5,9 @@ node_modules/
 .env.*
 !.env.example
 
+# Stato runtime (id messaggi gerarchia, ecc.)
+data/
+
 npm-debug.log*
 logs/
 coverage/

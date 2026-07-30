@@ -100,8 +100,15 @@ della gerarchia del Sheriff's Department: per ogni grado pinga il ruolo e i
 membri che lo hanno (oppure `//` se e' vuoto). I ping sono solo visuali: non
 notifichano nessuno.
 
+Dopo il setup il messaggio **si aggiorna da solo** quando assegni/togli un
+ruolo della gerarchia o quando un membro con un grado esce dal server. Gli
+id del messaggio restano in `data/gerarchia.json` (in Docker: volume
+`bot-data`).
+
 Ruoli, ordine e raggruppamenti si cambiano in `src/config/gerarchia.js`.
-Richiede **Server Members Intent** (vedi sopra).
+Richiede **Server Members Intent** (vedi sopra). Rilancia `/setup-gerarchia`
+solo se vuoi spostare il pannello in un altro canale (i messaggi vecchi
+vengono cancellati).
 
 ## Sistema ticket
 

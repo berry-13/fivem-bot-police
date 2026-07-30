@@ -1,12 +1,12 @@
 'use strict';
 
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
-const { buildHierarchyMessages } = require('../../lib/gerarchia');
+const { publishHierarchy } = require('../../lib/gerarchia');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('setup-gerarchia')
-    .setDescription('Invia la lista della gerarchia del reparto in questo canale')
+    .setDescription('Invia la lista della gerarchia del reparto in questo canale (si aggiorna da sola)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   async execute(interaction) {
@@ -19,28 +19,26 @@ module.exports = {
       return;
     }
 
-    let chunks;
+    let result;
     try {
-      chunks = await buildHierarchyMessages(guild);
+      result = await publishHierarchy(interaction.channel, guild, {
+        client: interaction.client,
+      });
     } catch (error) {
-      console.error('Errore nel costruire la gerarchia:', error);
+      console.error('Errore nel pubblicare la gerarchia:', error);
       await interaction.editReply({
         content:
-          '❌ Impossibile caricare i membri. Assicurati che il bot abbia l\'intent **Server Members** ' +
-          'abilitato nel Developer Portal e i permessi per vedere i membri.',
+          '❌ Impossibile caricare o inviare la gerarchia. Assicurati che il bot abbia l\'intent ' +
+          '**Server Members** abilitato e i permessi per scrivere in questo canale.',
       });
       return;
     }
 
-    // allowedMentions vuoto: i ping si vedono ma non notificano nessuno
-    // (altrimenti al setup partirebbero decine di ping a ruoli e utenti).
-    const sendOptions = { allowedMentions: { parse: [] } };
-
-    for (const content of chunks) {
-      await interaction.channel.send({ content, ...sendOptions });
-    }
-
-    const pezzi = chunks.length > 1 ? ` (${chunks.length} messaggi)` : '';
-    await interaction.editReply({ content: `✅ Gerarchia inviata${pezzi}!` });
+    const pezzi = result.messageIds.length > 1 ? ` (${result.messageIds.length} messaggi)` : '';
+    await interaction.editReply({
+      content:
+        `✅ Gerarchia inviata${pezzi}!\n` +
+        'Si aggiorna in automatico quando assegni o togli i ruoli del reparto.',
+    });
   },
 };

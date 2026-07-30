@@ -21,6 +21,10 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
 
+# Cartella scrivibile per lo stato runtime (es. id del messaggio gerarchia).
+# In compose va montata come volume cosi' sopravvive ai rebuild.
+RUN mkdir -p /app/data && chown node:node /app/data
+
 # L'immagine node include gia' un utente non privilegiato: nessun processo root.
 USER node
 

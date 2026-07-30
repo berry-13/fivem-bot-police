@@ -8,8 +8,14 @@ services:
     # init: true fa girare un reaper come PID 1 che inoltra i segnali,
     # cosi' "docker compose stop" arriva davvero a SIGTERM nel bot.
     init: true
+    # Persistenza id messaggio gerarchia (e altro stato futuro).
+    volumes:
+      - bot-data:/app/data
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  bot-data:

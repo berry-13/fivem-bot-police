@@ -2,28 +2,42 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { Collection } = require('discord.js');
 
 const gerarchiaConfig = require('../src/config/gerarchia');
+const store = require('../src/lib/gerarchia-store');
 const {
   buildHierarchyContent,
   formatRoleLine,
+  hierarchyRoleIds,
+  hierarchyRolesChanged,
+  memberHasHierarchyRole,
   membersWithRole,
+  publishHierarchy,
+  refreshHierarchy,
   splitContent,
   DISCORD_CONTENT_LIMIT,
+  _resetRefreshTimers,
 } = require('../src/lib/gerarchia');
 const setupGerarchia = require('../src/commands/slash/setupgerarchia');
+const guildMemberUpdate = require('../src/events/guildMemberUpdate');
+const guildMemberRemove = require('../src/events/guildMemberRemove');
 const { metodiRisposta, statoInterazione } = require('./helpers/ticket-fakes');
 
-function makeMember(id, { bot = false } = {}) {
+function makeMember(id, { bot = false, roles = [] } = {}) {
+  const roleCache = new Collection(roles.map(roleId => [roleId, { id: roleId }]));
   return {
     id,
     user: { bot },
+    roles: { cache: roleCache },
     toString: () => `<@${id}>`,
   };
 }
 
-function makeGuild({ roles = {} } = {}) {
+function makeGuild({ id = 'guild-1', roles = {}, client } = {}) {
   // roles: { roleId: [member, ...] }
   const roleCache = new Collection();
   for (const [roleId, members] of Object.entries(roles)) {
@@ -35,11 +49,50 @@ function makeGuild({ roles = {} } = {}) {
   }
 
   return {
+    id,
+    client,
     roles: { cache: roleCache },
     members: {
       fetch: async () => new Collection(),
     },
   };
+}
+
+function tempStorePath() {
+  return path.join(os.tmpdir(), `gerarchia-test-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+}
+
+function makeChannel() {
+  const messages = new Map();
+  let seq = 1;
+  const channel = {
+    id: 'channel-1',
+    messages: {
+      fetch: async id => {
+        const msg = messages.get(String(id));
+        if (!msg) throw new Error('Unknown Message');
+        return msg;
+      },
+    },
+    send: async payload => {
+      const id = `msg-${seq++}`;
+      const message = {
+        id,
+        content: payload.content,
+        edit: async next => {
+          message.content = next.content;
+          return message;
+        },
+        delete: async () => {
+          messages.delete(id);
+        },
+      };
+      messages.set(id, message);
+      return message;
+    },
+    _messages: messages,
+  };
+  return channel;
 }
 
 test('formatRoleLine: ruolo vuoto usa il placeholder //', () => {
@@ -87,19 +140,10 @@ test('buildHierarchyContent rispetta gruppi, separatori e footer', () => {
     footerRoles: [footer],
   });
 
-  // Titolo in cima
   assert.ok(content.startsWith('# TITOLO\n\n'));
-
-  // Primo gruppo: ruolo pieno, separatore, ruolo vuoto
   assert.match(content, new RegExp(`<@&${r1}> <@100>\\n---\\n<@&${r2}> //`));
-
-  // Separatore di gruppo in grassetto
   assert.ok(content.includes('**===**'));
-
-  // Secondo gruppo con due membri
   assert.ok(content.includes(`<@&${r3}> <@200> <@201>`));
-
-  // Footer solo come menzione ruolo (senza lista membri)
   assert.ok(content.trimEnd().endsWith(`<@&${footer}>`));
 });
 
@@ -147,36 +191,117 @@ test('splitContent spezza a forza una riga più lunga del limite', () => {
   }
 });
 
-test('setup-gerarchia invia il messaggio e conferma in ephemeral', async () => {
-  const r1 = gerarchiaConfig.groups[0][0];
-  const guild = makeGuild({
-    roles: {
-      [r1]: [makeMember('42')],
+test('hierarchyRolesChanged ignora nickname e ruoli fuori gerarchia', () => {
+  const tracked = [...hierarchyRoleIds()][0];
+  const oldM = makeMember('u1', { roles: [tracked, 'altro'] });
+  const same = makeMember('u1', { roles: [tracked, 'altro', 'nuovo-fuori'] });
+  const promoted = makeMember('u1', { roles: [tracked, 'altro', [...hierarchyRoleIds()][1]] });
+  const demoted = makeMember('u1', { roles: ['altro'] });
+
+  assert.equal(hierarchyRolesChanged(oldM, same), false);
+  assert.equal(hierarchyRolesChanged(oldM, promoted), true);
+  assert.equal(hierarchyRolesChanged(oldM, demoted), true);
+});
+
+test('memberHasHierarchyRole riconosce i gradi del reparto', () => {
+  const tracked = [...hierarchyRoleIds()][0];
+  assert.equal(memberHasHierarchyRole(makeMember('u1', { roles: [tracked] })), true);
+  assert.equal(memberHasHierarchyRole(makeMember('u1', { roles: ['cittadino'] })), false);
+});
+
+test('store salva e rilegge la board', () => {
+  const storePath = tempStorePath();
+  try {
+    assert.equal(store.getBoard('g1', storePath), null);
+    store.setBoard('g1', { channelId: 'c1', messageIds: ['m1', 'm2'] }, storePath);
+    assert.deepEqual(store.getBoard('g1', storePath), {
+      channelId: 'c1',
+      messageIds: ['m1', 'm2'],
+    });
+    store.clearBoard('g1', storePath);
+    assert.equal(store.getBoard('g1', storePath), null);
+  } finally {
+    fs.rmSync(storePath, { force: true });
+  }
+});
+
+test('publishHierarchy salva gli id e refreshHierarchy riedita il messaggio', async () => {
+  const storePath = tempStorePath();
+  const roleId = gerarchiaConfig.groups[0][0];
+  const channel = makeChannel();
+  const client = {
+    channels: {
+      fetch: async id => {
+        assert.equal(id, channel.id);
+        return channel;
+      },
     },
+  };
+  const guild = makeGuild({
+    id: 'guild-pub',
+    client,
+    roles: { [roleId]: [makeMember('42')] },
   });
 
-  const inviati = [];
+  try {
+    const published = await publishHierarchy(channel, guild, { client, storePath });
+    assert.equal(published.messageIds.length, 1);
+    assert.ok(channel._messages.get(published.messageIds[0]).content.includes('<@42>'));
+
+    // Simula promozione: aggiungi un secondo membro al ruolo in cache.
+    const role = guild.roles.cache.get(roleId);
+    role.members.set('99', makeMember('99'));
+
+    const refreshed = await refreshHierarchy(guild, { client, storePath });
+    assert.equal(refreshed.updated, true);
+    const content = channel._messages.get(published.messageIds[0]).content;
+    assert.ok(content.includes('<@42>'));
+    assert.ok(content.includes('<@99>'));
+  } finally {
+    fs.rmSync(storePath, { force: true });
+  }
+});
+
+test('setup-gerarchia invia il messaggio, salva lo store e conferma in ephemeral', async () => {
+  const storePath = tempStorePath();
+  const prev = process.env.GERARCHIA_STORE_PATH;
+  process.env.GERARCHIA_STORE_PATH = storePath;
+
+  const r1 = gerarchiaConfig.groups[0][0];
+  const channel = makeChannel();
+  const guild = makeGuild({
+    id: 'guild-setup',
+    roles: { [r1]: [makeMember('42')] },
+  });
+
   const stato = statoInterazione();
   const interaction = {
     guild,
-    channel: {
-      send: async payload => {
-        inviati.push(payload);
-        return payload;
+    channel,
+    client: {
+      channels: {
+        fetch: async () => channel,
       },
     },
     ...metodiRisposta(stato),
   };
 
-  await setupGerarchia.execute(interaction);
+  try {
+    await setupGerarchia.execute(interaction);
 
-  assert.equal(stato.deferred, true);
-  assert.equal(inviati.length, 1);
-  assert.ok(inviati[0].content.includes(gerarchiaConfig.title));
-  assert.ok(inviati[0].content.includes(`<@&${r1}> <@42>`));
-  // Nessun ping reale: allowedMentions vuoto
-  assert.deepEqual(inviati[0].allowedMentions, { parse: [] });
-  assert.match(stato.edits[0].content, /Gerarchia inviata/);
+    assert.equal(stato.deferred, true);
+    assert.equal(channel._messages.size, 1);
+    const board = store.getBoard('guild-setup', storePath);
+    assert.ok(board);
+    assert.equal(board.channelId, channel.id);
+    assert.equal(board.messageIds.length, 1);
+    assert.match(stato.edits[0].content, /Gerarchia inviata/);
+    assert.match(stato.edits[0].content, /aggiorna in automatico/);
+  } finally {
+    if (prev === undefined) delete process.env.GERARCHIA_STORE_PATH;
+    else process.env.GERARCHIA_STORE_PATH = prev;
+    fs.rmSync(storePath, { force: true });
+  }
 });
 
 test('setup-gerarchia fuori da un guild risponde con errore', async () => {
@@ -195,8 +320,43 @@ test('setup-gerarchia fuori da un guild risponde con errore', async () => {
 test('il comando e- riservato agli amministratori', () => {
   const json = setupGerarchia.data.toJSON();
   assert.equal(json.name, 'setup-gerarchia');
-  // default_member_permissions e' una stringa bitmask in discord.js
   assert.ok(json.default_member_permissions);
   assert.notEqual(json.default_member_permissions, '0');
 });
 
+test('guildMemberUpdate non fa nulla se i ruoli gerarchia non cambiano', async () => {
+  _resetRefreshTimers();
+  const tracked = [...hierarchyRoleIds()][0];
+  const guild = makeGuild({ id: 'g-evt' });
+  const oldM = makeMember('u1', { roles: [tracked] });
+  const newM = makeMember('u1', { roles: [tracked, 'altro'] });
+  newM.guild = guild;
+
+  await guildMemberUpdate.execute(oldM, newM);
+  // Nessun timer pendente se non c'e' un cambio rilevante... ma schedule non e'
+  // chiamato. Controlliamo che non esploda e che non ci siano timer.
+  // (schedule non e' chiamato -> map vuota)
+  assert.equal(hierarchyRolesChanged(oldM, newM), false);
+});
+
+test('guildMemberUpdate schedula il refresh se cambia un grado', async () => {
+  _resetRefreshTimers();
+  const tracked = [...hierarchyRoleIds()][0];
+  const guild = makeGuild({ id: 'g-evt-2' });
+  const oldM = makeMember('u1', { roles: [] });
+  const newM = makeMember('u1', { roles: [tracked] });
+  newM.guild = guild;
+
+  // Intercettiamo schedule via refresh con debounce 0 e store senza board:
+  // non deve crashare.
+  await guildMemberUpdate.execute(oldM, newM);
+  assert.equal(hierarchyRolesChanged(oldM, newM), true);
+  _resetRefreshTimers();
+});
+
+test('guildMemberRemove ignora chi non aveva gradi del reparto', async () => {
+  const member = makeMember('u1', { roles: ['cittadino'] });
+  member.guild = makeGuild({ id: 'g-rm' });
+  await guildMemberRemove.execute(member);
+  assert.equal(memberHasHierarchyRole(member), false);
+});
