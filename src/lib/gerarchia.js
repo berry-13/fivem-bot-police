@@ -11,7 +11,75 @@ const REFRESH_DEBOUNCE_MS = 2500;
 
 const pendingRefresh = new Map();
 
+// Un solo Request Guild Members (opcode 8) per guild alla volta: due fetch
+// ravvicinati (ready + refresh, o doppio role update) fanno scattare il
+// GatewayRateLimitError.
+const inflightMemberFetches = new Map();
+
 const SEND_OPTIONS = { allowedMentions: { parse: [] } };
+
+function isGatewayMembersRateLimit(error) {
+  if (!error) return false;
+  if (error.name === 'GatewayRateLimitError') return true;
+  // discord.js a volte espone solo data/opcode
+  return error.data?.opcode === 8 && typeof error.data?.retry_after === 'number';
+}
+
+/**
+ * True se la cache locale copre gia' tutti i membri del server: in quel caso
+ * un altro members.fetch() e' solo un rate limit gratis.
+ */
+function isMembersCacheComplete(guild) {
+  const cached = guild.members?.cache?.size ?? 0;
+  const total = guild.memberCount;
+  if (typeof total === 'number' && total > 0) {
+    return cached >= total;
+  }
+  return false;
+}
+
+/**
+ * Assicura che i membri siano in cache. Se sono gia' tutti presenti non
+ * tocca il gateway. Se c'e' un fetch in corso lo riutilizza. Se Discord
+ * rate-limita l'opcode 8 e abbiamo almeno qualcuno in cache, usa quello.
+ */
+function ensureMembersCached(guild, { force = false } = {}) {
+  if (!guild?.members?.fetch) {
+    return Promise.resolve(guild?.members?.cache ?? null);
+  }
+
+  if (!force && isMembersCacheComplete(guild)) {
+    return Promise.resolve(guild.members.cache);
+  }
+
+  const guildId = guild.id ?? 'unknown';
+  const existing = inflightMemberFetches.get(guildId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      return await guild.members.fetch();
+    } catch (error) {
+      if (isGatewayMembersRateLimit(error)) {
+        const cached = guild.members.cache?.size ?? 0;
+        if (cached > 0) {
+          const wait = error.data?.retry_after ?? '?';
+          console.warn(
+            `Request Guild Members in rate limit per ${guild.name || guildId} ` +
+              `(retry after ${wait}s): uso la cache locale (${cached} membri).`,
+          );
+          return guild.members.cache;
+        }
+      }
+      throw error;
+    } finally {
+      inflightMemberFetches.delete(guildId);
+    }
+  })();
+
+  inflightMemberFetches.set(guildId, promise);
+  return promise;
+}
 
 /**
  * Tutti i ruoli che compaiono nella gerarchia (gradi + footer).
@@ -156,13 +224,13 @@ function splitContent(content, limit = DISCORD_CONTENT_LIMIT) {
 }
 
 /**
- * Carica tutti i membri del guild (serve l'intent GuildMembers) e costruisce
- * i pezzi di messaggio da inviare.
+ * Assicura la cache membri (senza rifetch inutili) e costruisce i pezzi
+ * di messaggio da inviare.
  */
 async function buildHierarchyMessages(guild, options = {}) {
-  // Senza fetch la cache ha solo chi ha parlato di recente: la gerarchia
-  // uscirebbe incompleta. Con l'intent abilitato Discord.js popola role.members.
-  await guild.members.fetch();
+  // Con l'intent GuildMembers, dopo il preload a ready e dopo guildMemberUpdate
+  // la cache e' gia' aggiornata: un fetch a ogni refresh prende solo rate limit.
+  await ensureMembersCached(guild);
 
   const content = buildHierarchyContent(guild, options);
   return splitContent(content);
@@ -312,17 +380,25 @@ function _resetRefreshTimers() {
   pendingRefresh.clear();
 }
 
+/** Solo per i test. */
+function _resetInflightFetches() {
+  inflightMemberFetches.clear();
+}
+
 module.exports = {
   DISCORD_CONTENT_LIMIT,
   REFRESH_DEBOUNCE_MS,
   SEND_OPTIONS,
+  _resetInflightFetches,
   _resetRefreshTimers,
   buildHierarchyContent,
   buildHierarchyMessages,
   deleteStoredMessages,
+  ensureMembersCached,
   formatRoleLine,
   hierarchyRoleIds,
   hierarchyRolesChanged,
+  isMembersCacheComplete,
   memberHasHierarchyRole,
   membersWithRole,
   publishHierarchy,

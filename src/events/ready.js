@@ -1,18 +1,19 @@
 'use strict';
 
+const { ensureMembersCached } = require('../lib/gerarchia');
+
 module.exports = {
   name: 'clientReady',
   once: true,
   execute(client) {
     console.log(`Bot online come ${client.user.tag} su ${client.guilds.cache.size} server.`);
 
-    // Riempie la cache membri in background (intent GuildMembers). Cosi'
-    // /setup-gerarchia e i refresh non devono scaricare tutto a freddo sotto
-    // la finestra dei 3 secondi dell'interazione.
+    // Un solo fetch per guild (condiviso con setup/refresh via ensureMembersCached).
     for (const guild of client.guilds.cache.values()) {
-      guild.members.fetch()
+      ensureMembersCached(guild)
         .then(members => {
-          console.log(`Cache membri pronta per ${guild.name}: ${members.size} membri.`);
+          const size = members?.size ?? guild.members.cache.size;
+          console.log(`Cache membri pronta per ${guild.name}: ${size} membri.`);
         })
         .catch(error => {
           console.warn(

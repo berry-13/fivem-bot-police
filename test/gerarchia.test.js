@@ -11,15 +11,18 @@ const gerarchiaConfig = require('../src/config/gerarchia');
 const store = require('../src/lib/gerarchia-store');
 const {
   buildHierarchyContent,
+  ensureMembersCached,
   formatRoleLine,
   hierarchyRoleIds,
   hierarchyRolesChanged,
+  isMembersCacheComplete,
   memberHasHierarchyRole,
   membersWithRole,
   publishHierarchy,
   refreshHierarchy,
   splitContent,
   DISCORD_CONTENT_LIMIT,
+  _resetInflightFetches,
   _resetRefreshTimers,
 } = require('../src/lib/gerarchia');
 const setupGerarchia = require('../src/commands/slash/setupgerarchia');
@@ -37,25 +40,39 @@ function makeMember(id, { bot = false, roles = [] } = {}) {
   };
 }
 
-function makeGuild({ id = 'guild-1', roles = {}, client } = {}) {
+function makeGuild({ id = 'guild-1', roles = {}, client, fetchImpl } = {}) {
   // roles: { roleId: [member, ...] }
   const roleCache = new Collection();
+  const allMembers = new Collection();
   for (const [roleId, members] of Object.entries(roles)) {
     const memberCache = new Collection(members.map(m => [m.id, m]));
     roleCache.set(roleId, {
       id: roleId,
       members: memberCache,
     });
+    for (const m of members) allMembers.set(m.id, m);
   }
 
-  return {
+  let fetchCount = 0;
+  const guild = {
     id,
+    name: id,
     client,
+    memberCount: allMembers.size,
     roles: { cache: roleCache },
     members: {
-      fetch: async () => new Collection(),
+      cache: allMembers,
+      fetch: async () => {
+        fetchCount += 1;
+        if (fetchImpl) return fetchImpl();
+        return allMembers;
+      },
+    },
+    get fetchCount() {
+      return fetchCount;
     },
   };
+  return guild;
 }
 
 function tempStorePath() {
@@ -189,6 +206,77 @@ test('splitContent spezza a forza una riga più lunga del limite', () => {
   for (const p of parts) {
     assert.ok(p.length <= DISCORD_CONTENT_LIMIT);
   }
+});
+
+test('isMembersCacheComplete e true se cache.size >= memberCount', () => {
+  const guild = makeGuild({
+    roles: { '1': [makeMember('a'), makeMember('b')] },
+  });
+  assert.equal(isMembersCacheComplete(guild), true);
+  guild.memberCount = 99;
+  assert.equal(isMembersCacheComplete(guild), false);
+});
+
+test('ensureMembersCached non chiama fetch se la cache e completa', async () => {
+  _resetInflightFetches();
+  const guild = makeGuild({
+    roles: { '1': [makeMember('a')] },
+  });
+  await ensureMembersCached(guild);
+  assert.equal(guild.fetchCount, 0);
+});
+
+test('ensureMembersCached usa la cache se Discord rate-limita l opcode 8', async () => {
+  _resetInflightFetches();
+  const guild = makeGuild({
+    roles: { '1': [makeMember('a')] },
+  });
+  // Forza un fetch: cache "incompleta"
+  guild.memberCount = 50;
+  let fetches = 0;
+  const originalCache = guild.members.cache;
+  guild.members.fetch = async () => {
+    fetches += 1;
+    const error = new Error('Request with opcode 8 was rate limited.');
+    error.name = 'GatewayRateLimitError';
+    error.data = { retry_after: 6.4, opcode: 8 };
+    throw error;
+  };
+
+  const result = await ensureMembersCached(guild);
+  assert.equal(fetches, 1);
+  assert.equal(result, originalCache);
+  assert.equal(result.size, 1);
+});
+
+test('ensureMembersCached deduplica fetch concorrenti sullo stesso guild', async () => {
+  _resetInflightFetches();
+  let fetches = 0;
+  let release;
+  const gate = new Promise(resolve => {
+    release = resolve;
+  });
+
+  const cache = new Collection([['u1', makeMember('u1')]]);
+  const guild = {
+    id: 'dedupe-guild',
+    name: 'dedupe',
+    memberCount: 10,
+    members: {
+      cache,
+      fetch: async () => {
+        fetches += 1;
+        await gate;
+        return cache;
+      },
+    },
+  };
+
+  const p1 = ensureMembersCached(guild);
+  const p2 = ensureMembersCached(guild);
+  release();
+  await Promise.all([p1, p2]);
+  assert.equal(fetches, 1);
 });
 
 test('hierarchyRolesChanged ignora nickname e ruoli fuori gerarchia', () => {
