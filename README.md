@@ -50,9 +50,15 @@ chiaro, invece di fallire piu' avanti con un errore delle API di Discord.
 
 ### Intent da abilitare
 
-Nel Developer Portal, sezione Bot, va attivato **Message Content Intent**: senza
-quello i comandi a prefisso non ricevono il testo dei messaggi. Gli altri intent
-usati (`Guilds`, `GuildMessages`, `DirectMessages`) non sono privilegiati.
+Nel Developer Portal, sezione Bot, vanno attivati:
+
+- **Message Content Intent**: senza quello i comandi a prefisso non ricevono il
+  testo dei messaggi.
+- **Server Members Intent**: senza quello `/setup-gerarchia` non riesce a
+  elencare chi ha ogni ruolo.
+
+Gli altri intent usati (`Guilds`, `GuildMessages`, `DirectMessages`) non sono
+privilegiati.
 
 ## Script
 
@@ -86,6 +92,16 @@ src/
   commands/prefix/      Comandi testuali: { name, execute }
 test/                   Test con node:test, nessuna dipendenza esterna
 ```
+
+## Gerarchia reparto
+
+`/setup-gerarchia` (solo amministratori) manda nel canale corrente la lista
+della gerarchia del Sheriff's Department: per ogni grado pinga il ruolo e i
+membri che lo hanno (oppure `//` se e' vuoto). I ping sono solo visuali: non
+notifichano nessuno.
+
+Ruoli, ordine e raggruppamenti si cambiano in `src/config/gerarchia.js`.
+Richiede **Server Members Intent** (vedi sopra).
 
 ## Sistema ticket
 

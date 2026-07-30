@@ -25,6 +25,9 @@ function createClient() {
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
+      // Privilegiato: serve a /setup-gerarchia per elencare chi ha ogni ruolo.
+      // Va abilitato anche nel Developer Portal (Bot -> Privileged Gateway Intents).
+      GatewayIntentBits.GuildMembers,
       // Necessario perche' i partial sotto abbiano senso: senza questo intent
       // i messaggi diretti non arrivano proprio.
       GatewayIntentBits.DirectMessages,
