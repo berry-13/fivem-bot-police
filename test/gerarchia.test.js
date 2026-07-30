@@ -278,6 +278,7 @@ test('setup-gerarchia invia il messaggio, salva lo store e conferma in ephemeral
   const interaction = {
     guild,
     channel,
+    createdTimestamp: Date.now(),
     client: {
       channels: {
         fetch: async () => channel,
@@ -295,8 +296,54 @@ test('setup-gerarchia invia il messaggio, salva lo store e conferma in ephemeral
     assert.ok(board);
     assert.equal(board.channelId, channel.id);
     assert.equal(board.messageIds.length, 1);
-    assert.match(stato.edits[0].content, /Gerarchia inviata/);
-    assert.match(stato.edits[0].content, /aggiorna in automatico/);
+    // I getter deferred/replied del fake non sopravvivono allo spread: la
+    // conferma puo' arrivare via reply (replies) o editReply (edits).
+    const conferma = stato.edits[0] || stato.replies[0];
+    assert.ok(conferma, 'attesa conferma ephemeral');
+    assert.match(conferma.content, /Gerarchia inviata/);
+    assert.match(conferma.content, /aggiorna in automatico/);
+  } finally {
+    if (prev === undefined) delete process.env.GERARCHIA_STORE_PATH;
+    else process.env.GERARCHIA_STORE_PATH = prev;
+    fs.rmSync(storePath, { force: true });
+  }
+});
+
+test('setup-gerarchia pubblica comunque se il defer fallisce (10062)', async () => {
+  const storePath = tempStorePath();
+  const prev = process.env.GERARCHIA_STORE_PATH;
+  process.env.GERARCHIA_STORE_PATH = storePath;
+
+  const r1 = gerarchiaConfig.groups[0][0];
+  const channel = makeChannel();
+  const guild = makeGuild({
+    id: 'guild-expired',
+    roles: { [r1]: [makeMember('7')] },
+  });
+
+  const stato = statoInterazione();
+  const interaction = {
+    guild,
+    channel,
+    createdTimestamp: Date.now() - 5000,
+    client: {
+      channels: { fetch: async () => channel },
+    },
+    ...metodiRisposta(stato),
+    deferReply: async () => {
+      const error = new Error('Unknown interaction');
+      error.code = 10062;
+      throw error;
+    },
+  };
+
+  try {
+    await assert.doesNotReject(() => setupGerarchia.execute(interaction));
+    // Messaggio gerarchia + eventuale conferma in canale
+    assert.ok(channel._messages.size >= 1);
+    const board = store.getBoard('guild-expired', storePath);
+    assert.ok(board);
+    assert.equal(board.messageIds.length, 1);
   } finally {
     if (prev === undefined) delete process.env.GERARCHIA_STORE_PATH;
     else process.env.GERARCHIA_STORE_PATH = prev;
@@ -309,12 +356,15 @@ test('setup-gerarchia fuori da un guild risponde con errore', async () => {
   const interaction = {
     guild: null,
     channel: { send: async () => {} },
+    createdTimestamp: Date.now(),
     ...metodiRisposta(stato),
   };
 
   await setupGerarchia.execute(interaction);
 
-  assert.match(stato.edits[0].content, /solo in un server/);
+  const conferma = stato.edits[0] || stato.replies[0];
+  assert.ok(conferma);
+  assert.match(conferma.content, /solo in un server/);
 });
 
 test('il comando e- riservato agli amministratori', () => {

@@ -3,7 +3,12 @@
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { safeReply, safeInteractionReply } = require('../src/lib/safe-reply');
+const {
+  isDeadInteractionError,
+  safeDeferReply,
+  safeInteractionReply,
+  safeReply,
+} = require('../src/lib/safe-reply');
 
 const originalError = console.error;
 
@@ -90,4 +95,37 @@ test('safeInteractionReply non propaga il rejection (interazione scaduta)', asyn
   };
 
   await assert.doesNotReject(() => safeInteractionReply(interaction, { content: 'ok' }));
+});
+
+test('isDeadInteractionError riconosce 10062 e 40060', () => {
+  assert.equal(isDeadInteractionError({ code: 10062 }), true);
+  assert.equal(isDeadInteractionError({ code: 40060 }), true);
+  assert.equal(isDeadInteractionError({ code: 50013 }), false);
+  assert.equal(isDeadInteractionError(null), false);
+});
+
+test('safeDeferReply torna true se il defer riesce', async () => {
+  let chiamato = false;
+  const interaction = {
+    deferReply: async () => {
+      chiamato = true;
+    },
+  };
+
+  assert.equal(await safeDeferReply(interaction, { flags: 64 }), true);
+  assert.equal(chiamato, true);
+});
+
+test('safeDeferReply torna false e non rilancia su Unknown interaction', async () => {
+  const interaction = {
+    deferReply: async () => {
+      const error = new Error('Unknown interaction');
+      error.code = 10062;
+      throw error;
+    },
+  };
+
+  await assert.doesNotReject(async () => {
+    assert.equal(await safeDeferReply(interaction), false);
+  });
 });

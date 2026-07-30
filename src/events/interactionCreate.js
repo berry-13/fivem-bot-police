@@ -11,7 +11,7 @@ const {
 } = require('discord.js');
 const ticketConfig = require('../config/tickets');
 const bandoConfig = require('../config/bandi');
-const { safeInteractionReply } = require('../lib/safe-reply');
+const { safeInteractionReply, isDeadInteractionError } = require('../lib/safe-reply');
 const {
   archiveTicket,
   buildTicketChannelName,
@@ -30,6 +30,9 @@ module.exports = {
         await command.execute(interaction, client);
       } catch (error) {
         console.error(`Errore nello slash command "${interaction.commandName}":`, error);
+        // Se l'interazione e' gia' morta (10062/40060) un altro reply fallisce
+        // di nuovo e riempie solo i log: usciamo.
+        if (isDeadInteractionError(error)) return;
         await safeInteractionReply(interaction, {
           content: "❌ Errore durante l'esecuzione del comando.",
           flags: MessageFlags.Ephemeral,

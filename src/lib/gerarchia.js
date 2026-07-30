@@ -196,15 +196,19 @@ async function deleteStoredMessages(client, guildId, storePath) {
 /**
  * Invia la gerarchia in un canale e salva channelId + messageIds per gli
  * aggiornamenti automatici. Se esisteva una board precedente, la cancella.
+ * Fetch membri e cancellazione messaggi vecchi partono in parallelo per
+ * restare dentro la finestra di risposta di Discord.
  */
 async function publishHierarchy(channel, guild, { client, storePath, options } = {}) {
   const guildId = guild.id;
 
-  if (client && guildId) {
-    await deleteStoredMessages(client, guildId, storePath);
-  }
+  const chunksPromise = buildHierarchyMessages(guild, options);
+  const deletePromise =
+    client && guildId
+      ? deleteStoredMessages(client, guildId, storePath)
+      : Promise.resolve();
 
-  const chunks = await buildHierarchyMessages(guild, options);
+  const [chunks] = await Promise.all([chunksPromise, deletePromise]);
   const messageIds = [];
 
   for (const content of chunks) {
