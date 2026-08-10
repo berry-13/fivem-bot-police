@@ -16,6 +16,9 @@ const nodeGlobals = {
   clearTimeout: 'readonly',
   setInterval: 'readonly',
   clearInterval: 'readonly',
+  // Globali Web API disponibili in Node 20+ (usati dal live monitor).
+  fetch: 'readonly',
+  URLSearchParams: 'readonly',
 };
 
 module.exports = [

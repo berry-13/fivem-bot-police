@@ -74,3 +74,20 @@ test('se destroy fallisce il processo esce comunque', async () => {
   await assert.doesNotReject(() => handle('SIGTERM'));
   assert.deepEqual(proc.exitCodes, [0]);
 });
+
+test('alla chiusura ferma anche il live monitor se presente', async () => {
+  const proc = fakeProc();
+  let stopped = 0;
+
+  const handle = registerShutdown(
+    {
+      destroy: async () => {},
+      liveMonitor: { stop: () => { stopped += 1; } },
+    },
+    { proc },
+  );
+  await handle('SIGTERM');
+
+  assert.equal(stopped, 1);
+  assert.deepEqual(proc.exitCodes, [0]);
+});
