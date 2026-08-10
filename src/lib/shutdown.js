@@ -19,6 +19,12 @@ function registerShutdown(client, { proc = process, signals = ['SIGINT', 'SIGTER
     console.log(`Ricevuto ${signal}, disconnessione in corso...`);
 
     try {
+      client.liveMonitor?.stop?.();
+    } catch (error) {
+      console.error('Errore durante lo stop del live monitor:', error);
+    }
+
+    try {
       await client.destroy();
     } catch (error) {
       console.error('Errore durante la disconnessione:', error);

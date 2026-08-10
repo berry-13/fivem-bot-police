@@ -1,6 +1,7 @@
 'use strict';
 
 const { ensureMembersCached } = require('../lib/gerarchia');
+const { startLiveMonitor } = require('../lib/live');
 
 module.exports = {
   name: 'clientReady',
@@ -22,5 +23,9 @@ module.exports = {
           );
         });
     }
+
+    // Notifiche quando gli streamer di config/live.js vanno in live (Twitch/TikTok).
+    // Si spegne in registerShutdown cosi' non resta un interval dopo SIGTERM.
+    client.liveMonitor = startLiveMonitor(client);
   },
 };

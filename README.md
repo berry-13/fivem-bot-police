@@ -44,6 +44,11 @@ npm start
 | `CLIENT_ID` | solo per `npm run deploy` | Application ID dell'app. |
 | `GUILD_ID` | no | Se valorizzato, registra i comandi solo in quel server, con effetto immediato. Se vuoto la registrazione e' globale e puo' richiedere fino a un'ora. |
 | `COMMAND_PREFIX` | no | Prefisso dei comandi testuali, default `!`. |
+| `LIVE_CHANNEL_ID` | per le notifiche live | Id del canale Discord dove mandare "X e' in live". |
+| `LIVE_ROLE_ID` | no | Id di un ruolo da pingare in ogni notifica live. |
+| `TWITCH_CLIENT_ID` | per Twitch | Client ID di un'app su [dev.twitch.tv](https://dev.twitch.tv/console). |
+| `TWITCH_CLIENT_SECRET` | per Twitch | Client Secret della stessa app. |
+| `LIVE_POLL_INTERVAL_MS` | no | Intervallo di controllo (default `60000`, minimo `15000`). |
 
 Se manca una variabile obbligatoria il processo esce subito con un messaggio
 chiaro, invece di fallire piu' avanti con un errore delle API di Discord.
@@ -85,13 +90,52 @@ src/
     loaders.js          Caricamento e validazione di comandi ed eventi
     safe-reply.js       Risposte che non propagano mai un rejection
     tickets.js          Logica dei ticket condivisa da bottone e comandi
+    live.js             Polling Twitch/TikTok e notifiche live
   config/
     tickets.js          Categorie dei ticket e nome del canale di log
+    live.js             Lista streamer da monitorare
   events/               Un file per evento del gateway
   commands/slash/       Slash command: { data, execute }
   commands/prefix/      Comandi testuali: { name, execute }
 test/                   Test con node:test, nessuna dipendenza esterna
 ```
+
+## Notifiche live (Twitch / TikTok)
+
+All'avvio il bot controlla periodicamente se gli streamer in `src/config/live.js`
+sono in live e, al passaggio da offline a online, manda un embed nel canale
+indicato da `LIVE_CHANNEL_ID`.
+
+Streamer preconfigurati:
+
+| Piattaforma | Account |
+|---|---|
+| Twitch | [salvinosalvo](https://www.twitch.tv/salvinosalvo) |
+| TikTok | [@xx_cicci_xx](https://www.tiktok.com/@xx_cicci_xx) |
+| Twitch | [ydiablo93](https://www.twitch.tv/ydiablo93) |
+| Twitch | [bigtaurus94](https://www.twitch.tv/bigtaurus94) |
+
+Setup minimo:
+
+1. Copia l'id del canale Discord (Modalita' sviluppatore attiva) in `LIVE_CHANNEL_ID`.
+2. Per Twitch: crea un'app su [dev.twitch.tv/console](https://dev.twitch.tv/console)
+   (tipo "Application integration" va bene) e metti Client ID e Secret in
+   `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`.
+3. TikTok non richiede credenziali: il bot interroga gli endpoint pubblici.
+4. Opzionale: `LIVE_ROLE_ID` per pingare un ruolo a ogni annuncio.
+
+Comportamento:
+
+- Al **primo** controllo dopo un avvio/riavvio non manda nulla: registra solo lo
+  stato attuale, cosi' un bot che riparte a meta' live non risparma il canale.
+- Notifica solo sul passaggio **offline -> live**. Finche' resta in live non
+  ripete il messaggio.
+- Errori di rete o API vengono loggati e ritentati al giro successivo; il
+  processo non cade.
+- Senza `LIVE_CHANNEL_ID` il monitor resta spento (warning in console).
+- Senza credenziali Twitch i soli account TikTok restano attivi.
+
+Per aggiungere o togliere streamer modifica `src/config/live.js` e riavvia.
 
 ## Gerarchia reparto
 
