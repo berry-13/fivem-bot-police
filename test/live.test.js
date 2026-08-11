@@ -8,6 +8,7 @@ const {
   createTwitchAuth,
   fetchTwitchLive,
   parseTikTokRoomPayload,
+  resolveLiveMention,
   buildLiveNotification,
   transitionAction,
   startLiveMonitor,
@@ -129,6 +130,26 @@ test('fetchTwitchLive mappa i login in live', async () => {
   );
 });
 
+test('resolveLiveMention distingue nessuno, ruolo e @everyone', () => {
+  assert.deepEqual(resolveLiveMention(undefined), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention(''), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('  '), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('123456789012345678'), {
+    kind: 'role',
+    roleId: '123456789012345678',
+  });
+  assert.deepEqual(resolveLiveMention('everyone'), { kind: 'everyone' });
+  assert.deepEqual(resolveLiveMention('@everyone'), { kind: 'everyone' });
+  assert.deepEqual(resolveLiveMention('EVERYONE'), { kind: 'everyone' });
+  // Id del server = id del ruolo @everyone: va trattato come everyone.
+  assert.deepEqual(resolveLiveMention('999888777', '999888777'), { kind: 'everyone' });
+  // Stesso snowflake ma guild diversa: resta un ping di ruolo.
+  assert.deepEqual(resolveLiveMention('999888777', '111'), {
+    kind: 'role',
+    roleId: '999888777',
+  });
+});
+
 test('buildLiveNotification produce embed Twitch con titolo e link', () => {
   const payload = buildLiveNotification({
     platform: 'twitch',
@@ -144,6 +165,7 @@ test('buildLiveNotification produce embed Twitch con titolo e link', () => {
   });
 
   assert.equal(payload.content, '<@&123>');
+  assert.deepEqual(payload.allowedMentions, { parse: [], roles: ['123'] });
   assert.equal(payload.embeds.length, 1);
   const data = payload.embeds[0].data;
   assert.match(data.title, /SalvinoSalvo/);
@@ -151,6 +173,27 @@ test('buildLiveNotification produce embed Twitch con titolo e link', () => {
   assert.equal(data.description, 'GTA RP');
   assert.equal(data.url, 'https://www.twitch.tv/salvinosalvo');
   assert.equal(data.color, 0x9146ff);
+});
+
+test('buildLiveNotification con everyone manda @everyone e allowedMentions', () => {
+  const byKeyword = buildLiveNotification({
+    platform: 'twitch',
+    displayName: 's4k3_tv',
+    info: { url: 'https://www.twitch.tv/s4k3_tv' },
+    roleId: 'everyone',
+  });
+  assert.equal(byKeyword.content, '@everyone');
+  assert.deepEqual(byKeyword.allowedMentions, { parse: ['everyone'] });
+
+  const byGuildId = buildLiveNotification({
+    platform: 'twitch',
+    displayName: 's4k3_tv',
+    info: { url: 'https://www.twitch.tv/s4k3_tv' },
+    roleId: '555666777',
+    guildId: '555666777',
+  });
+  assert.equal(byGuildId.content, '@everyone');
+  assert.deepEqual(byGuildId.allowedMentions, { parse: ['everyone'] });
 });
 
 test('buildLiveNotification TikTok senza ruolo non ha content', () => {
@@ -161,6 +204,7 @@ test('buildLiveNotification TikTok senza ruolo non ha content', () => {
   });
 
   assert.equal(payload.content, undefined);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.equal(payload.embeds[0].data.color, 0x010101);
 });
 

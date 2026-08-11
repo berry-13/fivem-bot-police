@@ -45,7 +45,7 @@ npm start
 | `GUILD_ID` | no | Se valorizzato, registra i comandi solo in quel server, con effetto immediato. Se vuoto la registrazione e' globale e puo' richiedere fino a un'ora. |
 | `COMMAND_PREFIX` | no | Prefisso dei comandi testuali, default `!`. |
 | `LIVE_CHANNEL_ID` | per le notifiche live | Id del canale Discord dove mandare "X e' in live". |
-| `LIVE_ROLE_ID` | no | Id di un ruolo da pingare in ogni notifica live. |
+| `LIVE_ROLE_ID` | no | Chi pingare in ogni notifica live: id di un ruolo, oppure `everyone` (o l'id del server) per `@everyone`. Vuoto = nessun ping. |
 | `TWITCH_CLIENT_ID` | per Twitch | Client ID di un'app su [dev.twitch.tv](https://dev.twitch.tv/console). |
 | `TWITCH_CLIENT_SECRET` | per Twitch | Client Secret della stessa app. |
 | `LIVE_POLL_INTERVAL_MS` | no | Intervallo di controllo (default `60000`, minimo `15000`). |
@@ -114,6 +114,7 @@ Streamer preconfigurati:
 | TikTok | [@xx_cicci_xx](https://www.tiktok.com/@xx_cicci_xx) |
 | Twitch | [ydiablo93](https://www.twitch.tv/ydiablo93) |
 | Twitch | [bigtaurus94](https://www.twitch.tv/bigtaurus94) |
+| Twitch | [s4k3_tv](https://www.twitch.tv/s4k3_tv) |
 
 Setup minimo:
 
@@ -122,7 +123,9 @@ Setup minimo:
    (tipo "Application integration" va bene) e metti Client ID e Secret in
    `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`.
 3. TikTok non richiede credenziali: il bot interroga gli endpoint pubblici.
-4. Opzionale: `LIVE_ROLE_ID` per pingare un ruolo a ogni annuncio.
+4. Opzionale: `LIVE_ROLE_ID` per pingare a ogni annuncio. Usa l'id di un ruolo,
+   oppure `everyone` (o l'id del server) per `@everyone`. Il bot deve avere il
+   permesso "Menziona @everyone, @here e tutti i ruoli" se usi `@everyone`.
 
 Comportamento:
 

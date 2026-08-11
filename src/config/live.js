@@ -31,5 +31,10 @@ module.exports = {
       id: 'bigtaurus94',
       displayName: 'BigTaurus94',
     },
+    {
+      platform: 'twitch',
+      id: 's4k3_tv',
+      displayName: 's4k3_tv',
+    },
   ],
 };

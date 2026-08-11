@@ -303,7 +303,62 @@ async function fetchTikTokLive(username, { fetchImpl = fetch } = {}) {
 }
 
 /**
- * Costruisce embed + eventuale content (ping ruolo) per una notifica live.
+ * Interpreta LIVE_ROLE_ID (o roleId passato a mano).
+ * - vuoto / assente: nessun ping
+ * - "everyone" / "@everyone": ping @everyone
+ * - snowflake uguale all'id del server: ping @everyone (l'id del ruolo @everyone
+ *   coincide col guild id, ma Discord non pinga se mandi solo <@&guildId>)
+ * - altro snowflake: ping di quel ruolo
+ *
+ * @param {string | undefined | null} roleId
+ * @param {string | undefined | null} [guildId]
+ * @returns {{ kind: 'none' } | { kind: 'everyone' } | { kind: 'role', roleId: string }}
+ */
+function resolveLiveMention(roleId, guildId) {
+  const raw = typeof roleId === 'string' ? roleId.trim() : '';
+  if (!raw) return { kind: 'none' };
+
+  const normalized = raw.toLowerCase();
+  if (normalized === 'everyone' || normalized === '@everyone') {
+    return { kind: 'everyone' };
+  }
+
+  // Il ruolo @everyone ha lo stesso id del server: va trattato come everyone,
+  // non come menzione di ruolo generica.
+  if (guildId && raw === String(guildId)) {
+    return { kind: 'everyone' };
+  }
+
+  return { kind: 'role', roleId: raw };
+}
+
+/**
+ * Content + allowedMentions coerenti col tipo di ping scelto.
+ * Senza allowedMentions espliciti Discord (e i default del client) possono
+ * sopprimere @everyone anche se il testo lo contiene.
+ * @param {{ kind: 'none' } | { kind: 'everyone' } | { kind: 'role', roleId: string }} mention
+ */
+function mentionPayload(mention) {
+  if (mention.kind === 'everyone') {
+    return {
+      content: '@everyone',
+      allowedMentions: { parse: ['everyone'] },
+    };
+  }
+  if (mention.kind === 'role') {
+    return {
+      content: `<@&${mention.roleId}>`,
+      allowedMentions: { parse: [], roles: [mention.roleId] },
+    };
+  }
+  return {
+    content: undefined,
+    allowedMentions: { parse: [] },
+  };
+}
+
+/**
+ * Costruisce embed + eventuale content (ping ruolo / @everyone) per una notifica live.
  * @param {{
  *   platform: 'twitch' | 'tiktok',
  *   displayName: string,
@@ -316,9 +371,10 @@ async function fetchTikTokLive(username, { fetchImpl = fetch } = {}) {
  *     profileImageUrl?: string | null,
  *   },
  *   roleId?: string,
+ *   guildId?: string,
  * }} opts
  */
-function buildLiveNotification({ platform, displayName, info, roleId }) {
+function buildLiveNotification({ platform, displayName, info, roleId, guildId }) {
   const isTwitch = platform === 'twitch';
   const platformLabel = isTwitch ? 'Twitch' : 'TikTok';
   const color = isTwitch ? COLOR_TWITCH : COLOR_TIKTOK;
@@ -358,9 +414,10 @@ function buildLiveNotification({ platform, displayName, info, roleId }) {
 
   embed.setFooter({ text: platformLabel });
 
-  const content = roleId ? `<@&${roleId}>` : undefined;
+  const mention = resolveLiveMention(roleId, guildId);
+  const { content, allowedMentions } = mentionPayload(mention);
 
-  return { content, embeds: [embed] };
+  return { content, embeds: [embed], allowedMentions };
 }
 
 /**
@@ -512,6 +569,9 @@ function startLiveMonitor(client, options = {}) {
       }
 
       const user = users.get(login);
+      const channel = await resolveChannel();
+      if (!channel) continue;
+
       const payload = buildLiveNotification({
         platform: 'twitch',
         displayName: streamer.displayName || user?.displayName || info.userName || login,
@@ -520,10 +580,8 @@ function startLiveMonitor(client, options = {}) {
           profileImageUrl: user?.profileImageUrl ?? null,
         },
         roleId,
+        guildId: channel.guild?.id,
       });
-
-      const channel = await resolveChannel();
-      if (!channel) continue;
 
       try {
         await channel.send(payload);
@@ -551,6 +609,9 @@ function startLiveMonitor(client, options = {}) {
       const action = transitionAction(previous, key, isLive, meta);
       if (action !== 'notify') continue;
 
+      const channel = await resolveChannel();
+      if (!channel) continue;
+
       const payload = buildLiveNotification({
         platform: 'tiktok',
         displayName: streamer.displayName || streamer.id,
@@ -560,10 +621,8 @@ function startLiveMonitor(client, options = {}) {
           url: info.url || `https://www.tiktok.com/@${streamer.id}/live`,
         },
         roleId,
+        guildId: channel.guild?.id,
       });
-
-      const channel = await resolveChannel();
-      if (!channel) continue;
 
       try {
         await channel.send(payload);
@@ -624,6 +683,8 @@ module.exports = {
   fetchTwitchUsers,
   parseTikTokRoomPayload,
   fetchTikTokLive,
+  resolveLiveMention,
+  mentionPayload,
   buildLiveNotification,
   transitionAction,
   startLiveMonitor,
