@@ -348,31 +348,32 @@ function parseKickChannelPayload(payload, username) {
 
 /**
  * Controlla se un account Kick e' in live.
+ * Fallimenti di rete/HTTP vengono propagati (invece di essere letti come
+ * offline): il chiamante deve trattarli come stato sconosciuto e non
+ * aggiornare lo stato precedente, per evitare falsi passaggi offline->live.
  * @param {string} username
- * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
  */
-async function fetchKickLive(username, { fetchImpl = fetch } = {}) {
+async function fetchKickLive(username, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const clean = username.replace(/^@/, '').trim();
   if (!clean) return { live: false };
 
-  try {
-    const channelUrl = `https://kick.com/api/v2/channels/${encodeURIComponent(clean)}`;
-    const response = await fetchImpl(channelUrl, {
-      headers: {
-        'User-Agent': KICK_UA,
-        Accept: 'application/json',
-      },
-    });
+  const channelUrl = `https://kick.com/api/v2/channels/${encodeURIComponent(clean)}`;
+  const response = await fetchImpl(channelUrl, {
+    headers: {
+      'User-Agent': KICK_UA,
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
 
-    if (!response.ok) {
-      return { live: false };
-    }
-
-    const json = await response.json();
-    return parseKickChannelPayload(json, clean);
-  } catch {
-    return { live: false };
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Kick channel HTTP ${response.status}: ${text.slice(0, 200)}`);
   }
+
+  const json = await response.json();
+  return parseKickChannelPayload(json, clean);
 }
 
 /**
@@ -722,8 +723,22 @@ function startLiveMonitor(client, options = {}) {
       }
 
       const isLive = Boolean(info?.live);
-      const action = transitionAction(previous, key, isLive, meta);
-      if (action !== 'notify') continue;
+
+      // Stato committato subito, tranne per la transizione offline->live:
+      // in quel caso si aggiorna solo dopo l'invio riuscito, cosi' un
+      // fallimento di resolveChannel/send viene ritentato al prossimo giro
+      // invece di essere considerato "gia' notificato".
+      if (!meta.seeded.has(key)) {
+        meta.seeded.add(key);
+        previous.set(key, isLive);
+        continue;
+      }
+
+      const wasLive = previous.get(key) === true;
+      if (!isLive || wasLive) {
+        previous.set(key, isLive);
+        continue;
+      }
 
       const channel = await resolveChannel();
       if (!channel) continue;
@@ -744,6 +759,7 @@ function startLiveMonitor(client, options = {}) {
 
       try {
         await channel.send(payload);
+        previous.set(key, isLive);
         console.log(`Live monitor: notificato Kick ${streamer.id}`);
       } catch (error) {
         console.warn(`Live monitor: invio fallito per Kick ${streamer.id}: ${error.message}`);

@@ -19,6 +19,7 @@ const nodeGlobals = {
   // Globali Web API disponibili in Node 20+ (usati dal live monitor).
   fetch: 'readonly',
   URLSearchParams: 'readonly',
+  AbortSignal: 'readonly',
 };
 
 module.exports = [
