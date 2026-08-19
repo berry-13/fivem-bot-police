@@ -8,6 +8,8 @@ const {
   createTwitchAuth,
   fetchTwitchLive,
   parseTikTokRoomPayload,
+  parseKickChannelPayload,
+  fetchKickLive,
   resolveLiveMention,
   buildLiveNotification,
   transitionAction,
@@ -61,6 +63,44 @@ test('parseTikTokRoomPayload riconosce status 2 come live', () => {
 
   const offline = parseTikTokRoomPayload({ data: { liveRoom: { status: 4 } } }, 'xx_cicci_xx');
   assert.equal(offline.live, false);
+});
+
+test('parseKickChannelPayload riconosce livestream come live', () => {
+  const live = parseKickChannelPayload(
+    {
+      livestream: {
+        session_title: 'Ciao Kick',
+        viewer_count: 7,
+        thumbnail: { url: 'https://img/kick.jpg' },
+      },
+      user: { profile_pic: 'https://img/avatar.jpg' },
+    },
+    'salvinosalvo',
+  );
+  assert.equal(live.live, true);
+  assert.equal(live.title, 'Ciao Kick');
+  assert.equal(live.viewerCount, 7);
+  assert.equal(live.thumbnailUrl, 'https://img/kick.jpg');
+  assert.equal(live.profileImageUrl, 'https://img/avatar.jpg');
+  assert.equal(live.url, 'https://kick.com/salvinosalvo');
+
+  const offline = parseKickChannelPayload({ livestream: null }, 'salvinosalvo');
+  assert.equal(offline.live, false);
+});
+
+test('fetchKickLive rilancia l\'errore su risposta HTTP non ok (stato sconosciuto, non offline)', async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 503,
+    async text() {
+      return 'service unavailable';
+    },
+  });
+
+  await assert.rejects(
+    () => fetchKickLive('salvinosalvo', { fetchImpl }),
+    /Kick channel HTTP 503/,
+  );
 });
 
 test('createTwitchAuth cache il token e lo rinnova se invalido', async () => {
@@ -208,6 +248,19 @@ test('buildLiveNotification TikTok senza ruolo non ha content', () => {
   assert.equal(payload.embeds[0].data.color, 0x010101);
 });
 
+test('buildLiveNotification Kick senza ruolo non ha content', () => {
+  const payload = buildLiveNotification({
+    platform: 'kick',
+    displayName: 'SalvinoSalvo',
+    info: { url: 'https://kick.com/salvinosalvo' },
+  });
+
+  assert.equal(payload.content, undefined);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
+  assert.match(payload.embeds[0].data.title, /Kick/);
+  assert.equal(payload.embeds[0].data.color, 0x53fc18);
+});
+
 test('startLiveMonitor senza LIVE_CHANNEL_ID non parte', () => {
   const monitor = startLiveMonitor(
     { channels: { cache: new Map() } },
@@ -352,6 +405,140 @@ test('startLiveMonitor notifica solo al passaggio offline -> live', async () => 
   // Ancora live: niente spam.
   await monitor._tick();
   assert.equal(inviati.length, 2);
+
+  monitor.stop();
+});
+
+test('startLiveMonitor Kick: un errore HTTP transitorio non forza offline ne\' causa falsi notify', async () => {
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickState = 'live';
+  const fetchImpl = async () => {
+    if (kickState === 'error') {
+      return { ok: false, status: 500, async text() { return 'boom'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return kickState === 'live'
+          ? { livestream: { session_title: 'In live su Kick', viewer_count: 3 }, user: {} }
+          : { livestream: null };
+      },
+    };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  // Seed: gia' live, nessun notify.
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Errore transitorio mentre e' ancora live: stato preservato, nessun notify.
+  kickState = 'error';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Ancora live dopo l'errore: se lo stato fosse stato resettato a offline
+  // dall'errore precedente, qui scatterebbe un falso notify offline->live.
+  kickState = 'live';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Va davvero offline.
+  kickState = 'offline';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Un altro errore transitorio mentre e' offline: stato preservato.
+  kickState = 'error';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Torna live per davvero: notify, perche' lo stato offline non era stato
+  // corrotto dall'errore transitorio.
+  kickState = 'live';
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+  assert.match(inviati[0].embeds[0].data.title, /Kick/);
+
+  monitor.stop();
+});
+
+test('startLiveMonitor Kick: un invio Discord fallito viene ritentato al giro successivo', async () => {
+  const inviati = [];
+  let sendShouldFail = true;
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      if (sendShouldFail) {
+        throw new Error('Discord API down');
+      }
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  await monitor._tick(); // seed offline
+  assert.equal(inviati.length, 0);
+
+  kickLive = true;
+  await monitor._tick(); // offline -> live, ma l'invio fallisce
+  assert.equal(inviati.length, 0);
+
+  // L'invio fallito non deve aver marcato lo stream come "gia' notificato":
+  // al giro successivo, ancora live, deve ritentare l'invio.
+  sendShouldFail = false;
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
+  // Da qui in poi niente altri invii per lo stesso stream.
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
 
   monitor.stop();
 });
