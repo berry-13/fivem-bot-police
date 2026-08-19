@@ -1,8 +1,8 @@
 'use strict';
 
 // Streamer da monitorare per le notifiche live.
-// platform: 'twitch' | 'tiktok'
-// id: login Twitch (minuscolo) o username TikTok senza @
+// platform: 'twitch' | 'tiktok' | 'kick'
+// id: login Twitch (minuscolo), username TikTok senza @, o username Kick
 // displayName: nome mostrato nel messaggio Discord (opzionale)
 
 module.exports = {
@@ -35,6 +35,11 @@ module.exports = {
       platform: 'twitch',
       id: 's4k3_tv',
       displayName: 's4k3_tv',
+    },
+    {
+      platform: 'kick',
+      id: 'salvinosalvo',
+      displayName: 'SalvinoSalvo',
     },
   ],
 };

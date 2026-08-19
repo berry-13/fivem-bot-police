@@ -11,9 +11,13 @@ const TWITCH_USERS_URL = 'https://api.twitch.tv/helix/users';
 const TIKTOK_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
+const KICK_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
 // Colori embed allineati al brand delle piattaforme.
 const COLOR_TWITCH = 0x9146ff;
 const COLOR_TIKTOK = 0x010101;
+const COLOR_KICK = 0x53fc18;
 
 /**
  * Chiave stabile per lo stato live di uno streamer.
@@ -303,6 +307,75 @@ async function fetchTikTokLive(username, { fetchImpl = fetch } = {}) {
 }
 
 /**
+ * Interpreta la risposta JSON dell'endpoint canale Kick.
+ * livestream null/assente = offline, oggetto = live.
+ * @param {unknown} payload
+ * @param {string} username
+ */
+function parseKickChannelPayload(payload, username) {
+  if (!payload || typeof payload !== 'object') {
+    return { live: false };
+  }
+
+  const root = /** @type {Record<string, unknown>} */ (payload);
+  const livestream = /** @type {Record<string, unknown> | null | undefined} */ (root.livestream);
+
+  if (!livestream || typeof livestream !== 'object') {
+    return { live: false };
+  }
+
+  const title =
+    (typeof livestream.session_title === 'string' && livestream.session_title) || null;
+
+  const thumbnail = /** @type {Record<string, unknown> | undefined} */ (livestream.thumbnail);
+  const thumbnailUrl = (typeof thumbnail?.url === 'string' && thumbnail.url) || null;
+
+  const viewerCount =
+    typeof livestream.viewer_count === 'number' ? livestream.viewer_count : null;
+
+  const user = /** @type {Record<string, unknown> | undefined} */ (root.user);
+  const profileImageUrl = (typeof user?.profile_pic === 'string' && user.profile_pic) || null;
+
+  return {
+    live: true,
+    title,
+    thumbnailUrl,
+    viewerCount,
+    profileImageUrl,
+    url: `https://kick.com/${username}`,
+  };
+}
+
+/**
+ * Controlla se un account Kick e' in live.
+ * @param {string} username
+ * @param {{ fetchImpl?: typeof fetch }} [opts]
+ */
+async function fetchKickLive(username, { fetchImpl = fetch } = {}) {
+  const clean = username.replace(/^@/, '').trim();
+  if (!clean) return { live: false };
+
+  try {
+    const channelUrl = `https://kick.com/api/v2/channels/${encodeURIComponent(clean)}`;
+    const response = await fetchImpl(channelUrl, {
+      headers: {
+        'User-Agent': KICK_UA,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      return { live: false };
+    }
+
+    const json = await response.json();
+    return parseKickChannelPayload(json, clean);
+  } catch {
+    return { live: false };
+  }
+}
+
+/**
  * Interpreta LIVE_ROLE_ID (o roleId passato a mano).
  * - vuoto / assente: nessun ping
  * - "everyone" / "@everyone": ping @everyone
@@ -360,7 +433,7 @@ function mentionPayload(mention) {
 /**
  * Costruisce embed + eventuale content (ping ruolo / @everyone) per una notifica live.
  * @param {{
- *   platform: 'twitch' | 'tiktok',
+ *   platform: 'twitch' | 'tiktok' | 'kick',
  *   displayName: string,
  *   info: {
  *     title?: string | null,
@@ -376,8 +449,9 @@ function mentionPayload(mention) {
  */
 function buildLiveNotification({ platform, displayName, info, roleId, guildId }) {
   const isTwitch = platform === 'twitch';
-  const platformLabel = isTwitch ? 'Twitch' : 'TikTok';
-  const color = isTwitch ? COLOR_TWITCH : COLOR_TIKTOK;
+  const isKick = platform === 'kick';
+  const platformLabel = isTwitch ? 'Twitch' : isKick ? 'Kick' : 'TikTok';
+  const color = isTwitch ? COLOR_TWITCH : isKick ? COLOR_KICK : COLOR_TIKTOK;
 
   const embed = new EmbedBuilder()
     .setColor(color)
@@ -484,6 +558,7 @@ function startLiveMonitor(client, options = {}) {
 
   const twitchStreamers = streamers.filter(s => s.platform === 'twitch');
   const tiktokStreamers = streamers.filter(s => s.platform === 'tiktok');
+  const kickStreamers = streamers.filter(s => s.platform === 'kick');
 
   let twitchAuth = null;
   if (twitchStreamers.length > 0) {
@@ -501,7 +576,7 @@ function startLiveMonitor(client, options = {}) {
     }
   }
 
-  if (!twitchAuth && tiktokStreamers.length === 0) {
+  if (!twitchAuth && tiktokStreamers.length === 0 && kickStreamers.length === 0) {
     console.warn('Live monitor: nessun provider attivo, skip.');
     return { stop() {}, running: false };
   }
@@ -633,12 +708,56 @@ function startLiveMonitor(client, options = {}) {
     }
   }
 
+  async function checkKick() {
+    for (const streamer of kickStreamers) {
+      if (stopped) return;
+
+      const key = streamerKey(streamer);
+      let info;
+      try {
+        info = await fetchKickLive(streamer.id, { fetchImpl });
+      } catch (error) {
+        console.warn(`Live monitor Kick ${streamer.id}: ${error.message}`);
+        continue;
+      }
+
+      const isLive = Boolean(info?.live);
+      const action = transitionAction(previous, key, isLive, meta);
+      if (action !== 'notify') continue;
+
+      const channel = await resolveChannel();
+      if (!channel) continue;
+
+      const payload = buildLiveNotification({
+        platform: 'kick',
+        displayName: streamer.displayName || streamer.id,
+        info: {
+          title: info.title,
+          viewerCount: info.viewerCount,
+          thumbnailUrl: info.thumbnailUrl,
+          profileImageUrl: info.profileImageUrl,
+          url: info.url || `https://kick.com/${streamer.id}`,
+        },
+        roleId,
+        guildId: channel.guild?.id,
+      });
+
+      try {
+        await channel.send(payload);
+        console.log(`Live monitor: notificato Kick ${streamer.id}`);
+      } catch (error) {
+        console.warn(`Live monitor: invio fallito per Kick ${streamer.id}: ${error.message}`);
+      }
+    }
+  }
+
   async function tick() {
     if (stopped || ticking) return;
     ticking = true;
     try {
       await checkTwitch();
       await checkTikTok();
+      await checkKick();
     } catch (error) {
       console.warn(`Live monitor: errore imprevisto: ${error.message}`);
     } finally {
@@ -683,6 +802,8 @@ module.exports = {
   fetchTwitchUsers,
   parseTikTokRoomPayload,
   fetchTikTokLive,
+  parseKickChannelPayload,
+  fetchKickLive,
   resolveLiveMention,
   mentionPayload,
   buildLiveNotification,

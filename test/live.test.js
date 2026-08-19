@@ -8,6 +8,7 @@ const {
   createTwitchAuth,
   fetchTwitchLive,
   parseTikTokRoomPayload,
+  parseKickChannelPayload,
   resolveLiveMention,
   buildLiveNotification,
   transitionAction,
@@ -60,6 +61,29 @@ test('parseTikTokRoomPayload riconosce status 2 come live', () => {
   assert.equal(live.url, 'https://www.tiktok.com/@xx_cicci_xx/live');
 
   const offline = parseTikTokRoomPayload({ data: { liveRoom: { status: 4 } } }, 'xx_cicci_xx');
+  assert.equal(offline.live, false);
+});
+
+test('parseKickChannelPayload riconosce livestream come live', () => {
+  const live = parseKickChannelPayload(
+    {
+      livestream: {
+        session_title: 'Ciao Kick',
+        viewer_count: 7,
+        thumbnail: { url: 'https://img/kick.jpg' },
+      },
+      user: { profile_pic: 'https://img/avatar.jpg' },
+    },
+    'salvinosalvo',
+  );
+  assert.equal(live.live, true);
+  assert.equal(live.title, 'Ciao Kick');
+  assert.equal(live.viewerCount, 7);
+  assert.equal(live.thumbnailUrl, 'https://img/kick.jpg');
+  assert.equal(live.profileImageUrl, 'https://img/avatar.jpg');
+  assert.equal(live.url, 'https://kick.com/salvinosalvo');
+
+  const offline = parseKickChannelPayload({ livestream: null }, 'salvinosalvo');
   assert.equal(offline.live, false);
 });
 
@@ -206,6 +230,19 @@ test('buildLiveNotification TikTok senza ruolo non ha content', () => {
   assert.equal(payload.content, undefined);
   assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.equal(payload.embeds[0].data.color, 0x010101);
+});
+
+test('buildLiveNotification Kick senza ruolo non ha content', () => {
+  const payload = buildLiveNotification({
+    platform: 'kick',
+    displayName: 'SalvinoSalvo',
+    info: { url: 'https://kick.com/salvinosalvo' },
+  });
+
+  assert.equal(payload.content, undefined);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
+  assert.match(payload.embeds[0].data.title, /Kick/);
+  assert.equal(payload.embeds[0].data.color, 0x53fc18);
 });
 
 test('startLiveMonitor senza LIVE_CHANNEL_ID non parte', () => {
