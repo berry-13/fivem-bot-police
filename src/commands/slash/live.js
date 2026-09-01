@@ -5,6 +5,7 @@ const {
   PermissionFlagsBits,
   MessageFlags,
   EmbedBuilder,
+  InteractionContextType,
 } = require('discord.js');
 const {
   MAX_STREAMERS,
@@ -15,8 +16,10 @@ const {
   platformLabel,
   profileUrl,
   removeStreamer,
+  resolveStreamers,
   streamerKey,
 } = require('../../lib/live-store');
+const { optionalEnv } = require('../../lib/env');
 const { safeInteractionReply } = require('../../lib/safe-reply');
 
 const PLATFORM_CHOICES = Object.entries(PLATFORMS).map(([value, meta]) => ({
@@ -35,6 +38,9 @@ module.exports = {
     .setName('live')
     .setDescription('Gestisci gli account monitorati per le notifiche live')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    // Solo dentro un server: in DM il controllo Administrator non si applica e
+    // chiunque potrebbe riscrivere la lista.
+    .setContexts(InteractionContextType.Guild)
     .addSubcommand(sub =>
       sub
         .setName('aggiungi')
@@ -73,6 +79,21 @@ module.exports = {
     .addSubcommand(sub => sub.setName('lista').setDescription('Mostra gli account monitorati')),
 
   async execute(interaction) {
+    // setContexts esclude i DM lato Discord, ma un comando registrato prima di
+    // questa modifica resta come era: meglio ricontrollare qui.
+    if (!interaction.inGuild()) {
+      await replyEphemeral(interaction, '❌ Questo comando funziona solo in un server.');
+      return;
+    }
+
+    if (!(await isGuildDelleLive(interaction))) {
+      await replyEphemeral(
+        interaction,
+        '❌ Le notifiche live sono configurate su un altro server: la lista si gestisce da lì.',
+      );
+      return;
+    }
+
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'aggiungi') {
@@ -95,7 +116,8 @@ module.exports = {
    */
   async autocomplete(interaction) {
     const focused = interaction.options.getFocused();
-    const choices = matchStreamers(listStreamers(), focused)
+    const inLista = interaction.inGuild() && (await isGuildDelleLive(interaction));
+    const choices = (inLista ? matchStreamers(listStreamers(), focused) : [])
       .slice(0, MAX_AUTOCOMPLETE_CHOICES)
       .map(streamer => ({
         name: `${platformLabel(streamer.platform)}: ${streamer.displayName || streamer.id}`.slice(0, 100),
@@ -120,6 +142,27 @@ function replyEphemeral(interaction, content) {
   });
 }
 
+/**
+ * La lista e il canale delle notifiche sono globali al processo, mentre il
+ * permesso Administrator vale nel server da cui arriva l'interazione: senza
+ * questo controllo l'amministratore di un altro server dove sta il bot
+ * potrebbe cambiare gli account annunciati qui.
+ * Con LIVE_CHANNEL_ID vuoto (notifiche spente) o con un canale irraggiungibile
+ * non c'e' un server da proteggere e il comando resta usabile.
+ * @param {import('discord.js').BaseInteraction} interaction
+ */
+async function isGuildDelleLive(interaction) {
+  const channelId = optionalEnv('LIVE_CHANNEL_ID');
+  if (!channelId) return true;
+
+  const cached = interaction.client.channels.cache.get(channelId);
+  const channel =
+    cached ?? (await interaction.client.channels.fetch(channelId).catch(() => null));
+  if (!channel?.guildId) return true;
+
+  return channel.guildId === interaction.guildId;
+}
+
 function formatStreamer(streamer) {
   const name = streamer.displayName ? `${streamer.displayName} (${streamer.id})` : streamer.id;
   return `**${platformLabel(streamer.platform)}** ${name}`;
@@ -133,6 +176,11 @@ function addErrorMessage(result) {
       return (
         `❌ Username non valido per ${platformLabel(result.platform)}: serve ${PLATFORMS[result.platform].idHint}. ` +
         'Puoi incollare anche il link del canale.'
+      );
+    case 'mismatch':
+      return (
+        `❌ Quel link e' di ${platformLabel(result.detected)}, ma hai scelto ${platformLabel(result.platform)}. ` +
+        `Cambia piattaforma o incolla il link ${platformLabel(result.platform)} giusto.`
       );
     case 'duplicate':
       return `ℹ️ ${formatStreamer(result.streamer)} e' già in lista.`;
@@ -172,12 +220,16 @@ async function handleRemove(interaction) {
     return;
   }
 
-  const matches = matchStreamers(streamers, query);
+  // Match esatto, non quello tollerante dei suggerimenti: "salvi" non deve
+  // cancellare "salvinosalvo" solo perche' e' l'unico che gli somiglia.
+  const matches = resolveStreamers(streamers, query);
 
   if (matches.length === 0) {
     await replyEphemeral(
       interaction,
-      `❌ Nessun account in lista corrisponde a "${query}". Guarda \`/live lista\`.`,
+      `❌ Nessun account in lista corrisponde esattamente a "${query}". ` +
+        'Scegli una voce dai suggerimenti, oppure scrivi lo username esatto, ' +
+        'il link del canale o `piattaforma:username`. La lista e\' in `/live lista`.',
     );
     return;
   }

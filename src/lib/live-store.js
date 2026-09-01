@@ -37,8 +37,15 @@ const PLATFORMS = {
 };
 
 // Accettiamo anche il link incollato al posto dello username: e' quello che
-// un admin ha sotto mano quando apre il canale dello streamer.
-const PLATFORM_URL_RE = /^(?:[a-z]+:\/\/)?(?:[\w-]+\.)*(?:twitch\.tv|tiktok\.com|kick\.com)\//i;
+// un admin ha sotto mano quando apre il canale dello streamer. L'host dice
+// anche di quale piattaforma e' il link, cosi' un link Kick incollato mentre
+// si e' scelto Twitch viene rifiutato invece di finire nella lista sbagliata.
+const PLATFORM_URL_RE = /^(?:[a-z]+:\/\/)?(?:[\w-]+\.)*(twitch\.tv|tiktok\.com|kick\.com)\//i;
+const PLATFORM_BY_HOST = {
+  'twitch.tv': 'twitch',
+  'tiktok.com': 'tiktok',
+  'kick.com': 'kick',
+};
 const URL_NOISE_SEGMENTS = new Set([
   'about',
   'channel',
@@ -70,12 +77,13 @@ function normalizePlatform(value) {
 }
 
 /**
- * Ricava lo username da uno username, un @handle o un link alla piattaforma.
- * Non valida la forma: ci pensa normalizeAccountId col pattern giusto.
+ * Legge uno username, un @handle o un link: torna lo username e, se l'input
+ * era un link, la piattaforma a cui quel link appartiene. Non valida la forma
+ * dello username: ci pensa normalizeStreamer col pattern della piattaforma.
  * @param {unknown} raw
- * @returns {string} username minuscolo, o '' se non estraibile
+ * @returns {{ id: string, platform: string | null }} id vuoto se non estraibile
  */
-function extractAccountId(raw) {
+function parseAccountInput(raw) {
   // Discord manda i link tra < > quando l'utente sopprime l'anteprima.
   let value = String(raw ?? '')
     .trim()
@@ -85,9 +93,10 @@ function extractAccountId(raw) {
 
   // Via query string e fragment: /salvinosalvo?sr=a resta salvinosalvo.
   value = value.split(/[?#]/)[0].trim();
-  if (!value) return '';
+  if (!value) return { id: '', platform: null };
 
-  if (PLATFORM_URL_RE.test(value)) {
+  const url = value.match(PLATFORM_URL_RE);
+  if (url) {
     const segments = value
       .replace(/^[a-z]+:\/\//i, '')
       .split('/')
@@ -101,20 +110,24 @@ function extractAccountId(raw) {
     const handle =
       segments.find(segment => segment.startsWith('@')) ??
       segments.find(segment => !URL_NOISE_SEGMENTS.has(segment.toLowerCase()));
-    value = handle ?? '';
-  } else if (value.includes('/')) {
-    // Un path di un dominio che non monitoriamo: meglio rifiutare che
-    // indovinare un pezzo qualunque dell'url.
-    return '';
+
+    return {
+      id: (handle ?? '').replace(/^@+/, '').toLowerCase(),
+      platform: PLATFORM_BY_HOST[url[1].toLowerCase()] ?? null,
+    };
   }
 
-  return value.replace(/^@+/, '').toLowerCase();
+  if (value.includes('/')) {
+    // Un path di un dominio che non monitoriamo: meglio rifiutare che
+    // indovinare un pezzo qualunque dell'url.
+    return { id: '', platform: null };
+  }
+
+  return { id: value.replace(/^@+/, '').toLowerCase(), platform: null };
 }
 
-function normalizeAccountId(platform, raw) {
-  const id = extractAccountId(raw);
-  if (!id) return null;
-  return PLATFORMS[platform].idPattern.test(id) ? id : null;
+function extractAccountId(raw) {
+  return parseAccountInput(raw).id;
 }
 
 function normalizeDisplayName(raw) {
@@ -129,17 +142,28 @@ function normalizeDisplayName(raw) {
  * Valida e normalizza una voce della lista.
  * @param {{ platform?: unknown, id?: unknown, displayName?: unknown }} input
  * @returns {{ ok: true, streamer: { platform: string, id: string, displayName?: string } }
- *   | { ok: false, reason: 'platform' | 'id', platform?: string }}
+ *   | { ok: false, reason: 'platform' | 'mismatch' | 'id', platform?: string, detected?: string }}
  */
 function normalizeStreamer(input) {
   const platform = normalizePlatform(input?.platform);
   if (!platform) return { ok: false, reason: 'platform' };
 
-  const id = normalizeAccountId(platform, input?.id);
-  if (!id) return { ok: false, reason: 'id', platform };
+  const parsed = parseAccountInput(input?.id);
+
+  // Link di un'altra piattaforma: lo username da solo sarebbe pure valido, ma
+  // il bot finirebbe a controllare il servizio sbagliato.
+  if (parsed.platform && parsed.platform !== platform) {
+    return { ok: false, reason: 'mismatch', platform, detected: parsed.platform };
+  }
+
+  if (!parsed.id || !PLATFORMS[platform].idPattern.test(parsed.id)) {
+    return { ok: false, reason: 'id', platform };
+  }
 
   const displayName = normalizeDisplayName(input?.displayName);
-  const streamer = displayName ? { platform, id, displayName } : { platform, id };
+  const streamer = displayName
+    ? { platform, id: parsed.id, displayName }
+    : { platform, id: parsed.id };
   return { ok: true, streamer };
 }
 
@@ -279,8 +303,42 @@ function removeStreamer(input, storePath) {
 }
 
 /**
- * Cerca nella lista. Accetta il valore dell'autocomplete
- * ("piattaforma:account"), uno username, un link o un pezzo di nome.
+ * Risolve un account in modo **esatto**: valore dell'autocomplete
+ * ("piattaforma:username"), username preciso o link del canale. Serve alle
+ * operazioni distruttive, dove un match parziale rimuoverebbe l'account
+ * sbagliato senza che nessuno l'abbia chiesto.
+ * Funzione pura: la lista arriva da chi chiama.
+ * @param {Array<{ platform: string, id: string, displayName?: string }>} streamers
+ * @param {unknown} query
+ */
+function resolveStreamers(streamers, query) {
+  const raw = String(query ?? '')
+    .trim()
+    .toLowerCase();
+  if (!raw) return [];
+
+  const separator = raw.indexOf(':');
+  if (separator > 0) {
+    const platform = normalizePlatform(raw.slice(0, separator));
+    // Attenzione: in "https://..." i due punti non separano la piattaforma,
+    // quindi si prosegue solo se il pezzo davanti e' una piattaforma vera.
+    if (platform) {
+      const { id } = parseAccountInput(raw.slice(separator + 1));
+      if (!id) return [];
+      return streamers.filter(streamer => streamerKey(streamer) === `${platform}:${id}`);
+    }
+  }
+
+  const { id, platform } = parseAccountInput(raw);
+  if (!id) return [];
+  return streamers.filter(
+    streamer => streamer.id === id && (!platform || streamer.platform === platform),
+  );
+}
+
+/**
+ * Cerca nella lista in modo tollerante: pezzi di username, di nome mostrato o
+ * di piattaforma. Solo per i suggerimenti dell'autocomplete, mai per rimuovere.
  * Funzione pura: la lista arriva da chi chiama.
  * @param {Array<{ platform: string, id: string, displayName?: string }>} streamers
  * @param {unknown} query
@@ -291,19 +349,11 @@ function matchStreamers(streamers, query) {
     .toLowerCase();
   if (!raw) return [...streamers];
 
-  const separator = raw.indexOf(':');
-  if (separator > 0) {
-    const platform = normalizePlatform(raw.slice(0, separator));
-    const id = extractAccountId(raw.slice(separator + 1));
-    if (platform && id) {
-      return streamers.filter(streamer => streamerKey(streamer) === `${platform}:${id}`);
-    }
-  }
-
-  const needle = extractAccountId(raw) || raw;
-  const exact = streamers.filter(streamer => streamer.id === needle);
+  // Se l'input identifica già un account preciso, i suggerimenti sono quello.
+  const exact = resolveStreamers(streamers, raw);
   if (exact.length > 0) return exact;
 
+  const needle = extractAccountId(raw) || raw;
   return streamers.filter(streamer => {
     const label = PLATFORMS[streamer.platform]?.label.toLowerCase() ?? streamer.platform;
     return (
@@ -333,10 +383,12 @@ module.exports = {
   loadStreamers,
   matchStreamers,
   normalizeStreamer,
+  parseAccountInput,
   platformLabel,
   profileUrl,
   removeStreamer,
   resolveStorePath,
+  resolveStreamers,
   saveStreamers,
   streamerKey,
 };

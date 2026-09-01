@@ -108,12 +108,13 @@ Il bot controlla periodicamente se gli account monitorati sono in live e, al
 passaggio da offline a online, manda un embed nel canale indicato da
 `LIVE_CHANNEL_ID`.
 
-La lista si gestisce da Discord con `/live` (solo amministratori):
+La lista si gestisce da Discord con `/live` (solo amministratori, e solo nel
+server che contiene il canale di `LIVE_CHANNEL_ID`):
 
 | Comando | Cosa fa |
 |---|---|
-| `/live aggiungi piattaforma: account: [nome:]` | Aggiunge un account. In `account` va lo username, l'`@handle` o il link del canale. `nome` e' facoltativo: e' il nome mostrato nella notifica, default lo username. |
-| `/live rimuovi account:` | Toglie un account. Il campo suggerisce quelli in lista; scrivendo a mano, se lo stesso username esiste su due piattaforme, indica quale con `piattaforma:username` (es. `kick:salvinosalvo`). |
+| `/live aggiungi piattaforma: account: [nome:]` | Aggiunge un account. In `account` va lo username, l'`@handle` o il link del canale; un link di una piattaforma diversa da quella scelta viene rifiutato. `nome` e' facoltativo: e' il nome mostrato nella notifica, default lo username. |
+| `/live rimuovi account:` | Toglie un account. Il campo suggerisce quelli in lista; scrivendo a mano serve il valore esatto (username, link o `piattaforma:username`, es. `kick:salvinosalvo`), perche' un pezzo di nome non cancelli l'account sbagliato. |
 | `/live lista` | Mostra gli account monitorati, divisi per piattaforma. |
 
 Le modifiche valgono subito: il monitor rilegge la lista a ogni giro di

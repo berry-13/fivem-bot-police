@@ -14,7 +14,9 @@ const {
   listStreamers,
   matchStreamers,
   normalizeStreamer,
+  parseAccountInput,
   removeStreamer,
+  resolveStreamers,
   saveStreamers,
 } = require('../src/lib/live-store');
 
@@ -217,4 +219,58 @@ test('saveStreamers scrive in modo atomico e non lascia temporanei in giro', () 
 
   assert.deepEqual(readFile().streamers, [{ platform: 'twitch', id: 'salvinosalvo' }]);
   assert.deepEqual(fs.readdirSync(dirComeFile), []);
+});
+
+test('parseAccountInput riconosce la piattaforma del link incollato', () => {
+  assert.deepEqual(parseAccountInput('https://www.twitch.tv/SalvinoSalvo'), {
+    id: 'salvinosalvo',
+    platform: 'twitch',
+  });
+  assert.deepEqual(parseAccountInput('https://www.tiktok.com/@xx_cicci_xx/live'), {
+    id: 'xx_cicci_xx',
+    platform: 'tiktok',
+  });
+  assert.deepEqual(parseAccountInput('kick.com/salvinosalvo'), {
+    id: 'salvinosalvo',
+    platform: 'kick',
+  });
+  // Username secco: nessuna piattaforma da dedurre.
+  assert.deepEqual(parseAccountInput('@SalvinoSalvo'), { id: 'salvinosalvo', platform: null });
+});
+
+test('normalizeStreamer rifiuta il link di una piattaforma diversa da quella scelta', () => {
+  // Lo username sarebbe valido anche su Twitch: senza il controllo sull'host
+  // finirebbe in lista come twitch:salvinosalvo e il bot guarderebbe il
+  // servizio sbagliato.
+  assert.deepEqual(normalizeStreamer({ platform: 'twitch', id: 'https://kick.com/salvinosalvo' }), {
+    ok: false,
+    reason: 'mismatch',
+    platform: 'twitch',
+    detected: 'kick',
+  });
+
+  assert.equal(normalizeStreamer({ platform: 'kick', id: 'https://kick.com/salvinosalvo' }).ok, true);
+});
+
+test('resolveStreamers pretende un match esatto', () => {
+  const streamers = [
+    { platform: 'twitch', id: 'salvinosalvo', displayName: 'SalvinoSalvo' },
+    { platform: 'kick', id: 'salvinosalvo' },
+    { platform: 'tiktok', id: 'xx_cicci_xx' },
+  ];
+
+  // Valore dell'autocomplete e username esatto.
+  assert.deepEqual(resolveStreamers(streamers, 'kick:salvinosalvo'), [streamers[1]]);
+  assert.equal(resolveStreamers(streamers, 'salvinosalvo').length, 2);
+
+  // Il link identifica anche la piattaforma.
+  assert.deepEqual(resolveStreamers(streamers, 'https://kick.com/salvinosalvo'), [streamers[1]]);
+
+  // Nessun match parziale: qui sta la differenza con matchStreamers, che
+  // suggerisce e non cancella niente.
+  assert.deepEqual(resolveStreamers(streamers, 'salvi'), []);
+  assert.deepEqual(resolveStreamers(streamers, 'cicci'), []);
+  assert.deepEqual(resolveStreamers(streamers, 'twitch'), []);
+  assert.deepEqual(resolveStreamers(streamers, ''), []);
+  assert.equal(matchStreamers(streamers, 'salvi').length, 2);
 });

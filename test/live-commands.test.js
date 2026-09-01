@@ -12,23 +12,31 @@ const { saveStreamers } = require('../src/lib/live-store');
 let tmpDir;
 let storePath;
 const originalStorePath = process.env.LIVE_STORE_PATH;
+const originalChannelId = process.env.LIVE_CHANNEL_ID;
 const originalWarn = console.warn;
+
+function restoreEnv(key, value) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-cmd-'));
   storePath = path.join(tmpDir, 'live.json');
   // Il comando usa lo store di default: lo dirottiamo su una cartella usa e getta.
   process.env.LIVE_STORE_PATH = storePath;
+  // Con un canale configurato il comando controlla di essere nel server giusto.
+  process.env.LIVE_CHANNEL_ID = 'chan-1';
   console.warn = () => {};
 });
 
 afterEach(() => {
   console.warn = originalWarn;
-  if (originalStorePath === undefined) {
-    delete process.env.LIVE_STORE_PATH;
-  } else {
-    process.env.LIVE_STORE_PATH = originalStorePath;
-  }
+  restoreEnv('LIVE_STORE_PATH', originalStorePath);
+  restoreEnv('LIVE_CHANNEL_ID', originalChannelId);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -36,14 +44,26 @@ function listaSuDisco() {
   return JSON.parse(fs.readFileSync(storePath, 'utf8')).streamers.map(s => `${s.platform}:${s.id}`);
 }
 
-function fakeInteraction(sub, valori = {}) {
+function fakeInteraction(sub, valori = {}, opzioni = {}) {
   const risposte = [];
   const suggerimenti = [];
+  const guildId = opzioni.guildId ?? 'guild-1';
+  // Il canale delle notifiche decide quale server puo' gestire la lista.
+  const liveChannel = opzioni.liveChannel ?? { guildId: 'guild-1' };
+
   return {
     risposte,
     suggerimenti,
     replied: false,
     deferred: false,
+    guildId,
+    inGuild: () => opzioni.inGuild ?? true,
+    client: {
+      channels: {
+        cache: { get: () => liveChannel ?? undefined },
+        fetch: async () => liveChannel ?? null,
+      },
+    },
     options: {
       getSubcommand: () => sub,
       getString: nome => valori[nome] ?? null,
@@ -197,4 +217,68 @@ test('/live autocomplete suggerisce solo gli account in lista', async () => {
     { name: 'Twitch: SalvinoSalvo', value: 'twitch:salvinosalvo' },
     { name: 'Kick: salvinosalvo', value: 'kick:salvinosalvo' },
   ]);
+});
+
+test('/live aggiungi rifiuta il link di una piattaforma diversa da quella scelta', async () => {
+  saveStreamers([], storePath);
+
+  const interaction = fakeInteraction('aggiungi', {
+    piattaforma: 'twitch',
+    account: 'https://kick.com/salvinosalvo',
+  });
+
+  await live.execute(interaction);
+
+  assert.match(interaction.risposte[0].content, /link e' di Kick, ma hai scelto Twitch/);
+  assert.deepEqual(listaSuDisco(), []);
+});
+
+test('/live rimuovi non cancella niente con un valore parziale', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }], storePath);
+
+  // "salvi" e' l'unico match tollerante: rimuovere su questa base cancellerebbe
+  // un account che nessuno ha indicato per davvero.
+  const interaction = fakeInteraction('rimuovi', { account: 'salvi' });
+
+  await live.execute(interaction);
+
+  assert.match(interaction.risposte[0].content, /corrisponde esattamente/);
+  assert.deepEqual(listaSuDisco(), ['twitch:salvinosalvo']);
+});
+
+test('/live rifiuta chi scrive da un altro server', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  // Bot su piu' server e comandi globali: l'admin del server B non deve poter
+  // cambiare gli annunci del server A.
+  const interaction = fakeInteraction(
+    'rimuovi',
+    { account: 'twitch:salvinosalvo' },
+    { guildId: 'guild-2' },
+  );
+
+  await live.execute(interaction);
+
+  assert.match(interaction.risposte[0].content, /configurate su un altro server/);
+  assert.deepEqual(listaSuDisco(), ['twitch:salvinosalvo']);
+});
+
+test('/live rifiuta le interazioni fuori da un server', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  const interaction = fakeInteraction('lista', {}, { inGuild: false });
+
+  await live.execute(interaction);
+
+  assert.match(interaction.risposte[0].content, /solo in un server/);
+});
+
+test('/live autocomplete non suggerisce niente da un altro server', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  const interaction = fakeInteraction('rimuovi', { focused: '' }, { guildId: 'guild-2' });
+
+  await live.autocomplete(interaction);
+
+  assert.deepEqual(interaction.suggerimenti, []);
 });
