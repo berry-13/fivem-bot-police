@@ -2,6 +2,9 @@
 
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const {
   streamerKey,
@@ -540,5 +543,94 @@ test('startLiveMonitor Kick: un invio Discord fallito viene ritentato al giro su
   await monitor._tick();
   assert.equal(inviati.length, 1);
 
+  monitor.stop();
+});
+
+test('startLiveMonitor rilegge la lista dallo store a ogni giro', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-monitor-'));
+  const storePath = path.join(tmpDir, 'live.json');
+
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  // Kick non richiede credenziali: l'account interrogato si legge dall'url.
+  const inLive = new Set();
+  const fetchImpl = async url => {
+    const username = String(url).match(/channels\/([^/?]+)/)?.[1];
+    return {
+      ok: true,
+      async json() {
+        return inLive.has(username)
+          ? { livestream: { session_title: `Live di ${username}`, viewer_count: 1 }, user: {} }
+          : { livestream: null };
+      },
+    };
+  };
+
+  scrivi([{ platform: 'kick', id: 'primo-canale' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline del solo account in lista
+    assert.deepEqual([...monitor._previous.keys()], ['kick:primo-canale']);
+
+    // /live aggiungi mentre il bot e' acceso: il giro dopo lo monitora, e il
+    // primo giro per lui e' solo seed (niente annuncio di una live in corso).
+    inLive.add('secondo-canale');
+    scrivi([{ platform: 'kick', id: 'primo-canale' }, { platform: 'kick', id: 'secondo-canale' }]);
+    await monitor._tick();
+    assert.equal(inviati.length, 0);
+    assert.deepEqual([...monitor._previous.keys()].sort(), ['kick:primo-canale', 'kick:secondo-canale']);
+
+    // Passaggio offline -> live rilevato senza riavvio.
+    inLive.delete('secondo-canale');
+    await monitor._tick();
+    inLive.add('secondo-canale');
+    await monitor._tick();
+    assert.equal(inviati.length, 1);
+    assert.match(inviati[0].embeds[0].data.title, /Kick/);
+
+    // /live rimuovi: niente piu' controlli e stato ripulito.
+    scrivi([{ platform: 'kick', id: 'primo-canale' }]);
+    await monitor._tick();
+    assert.deepEqual([...monitor._previous.keys()], ['kick:primo-canale']);
+    assert.deepEqual([...monitor._meta.seeded], ['kick:primo-canale']);
+    assert.equal(inviati.length, 1);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('startLiveMonitor parte anche con la lista vuota, in attesa di /live aggiungi', () => {
+  const monitor = startLiveMonitor(
+    { channels: { cache: new Map() } },
+    { channelId: 'chan-1', streamers: [], setIntervalFn: () => ({ unref() {} }), clearIntervalFn: () => {} },
+  );
+
+  assert.equal(monitor.running, true);
   monitor.stop();
 });

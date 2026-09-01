@@ -49,6 +49,7 @@ npm start
 | `TWITCH_CLIENT_ID` | per Twitch | Client ID di un'app su [dev.twitch.tv](https://dev.twitch.tv/console). |
 | `TWITCH_CLIENT_SECRET` | per Twitch | Client Secret della stessa app. |
 | `LIVE_POLL_INTERVAL_MS` | no | Intervallo di controllo (default `60000`, minimo `15000`). |
+| `LIVE_STORE_PATH` | no | Dove salvare la lista streamer modificata con `/live` (default `data/live.json`). |
 
 Se manca una variabile obbligatoria il processo esce subito con un messaggio
 chiaro, invece di fallire piu' avanti con un errore delle API di Discord.
@@ -90,22 +91,39 @@ src/
     loaders.js          Caricamento e validazione di comandi ed eventi
     safe-reply.js       Risposte che non propagano mai un rejection
     tickets.js          Logica dei ticket condivisa da bottone e comandi
-    live.js             Polling Twitch/TikTok e notifiche live
+    live.js             Polling Twitch/TikTok/Kick e notifiche live
+    live-store.js       Lista streamer su disco, gestita dai comandi /live
   config/
     tickets.js          Categorie dei ticket e nome del canale di log
-    live.js             Lista streamer da monitorare
+    live.js             Streamer di partenza (seed del primo avvio)
   events/               Un file per evento del gateway
   commands/slash/       Slash command: { data, execute }
   commands/prefix/      Comandi testuali: { name, execute }
 test/                   Test con node:test, nessuna dipendenza esterna
 ```
 
-## Notifiche live (Twitch / TikTok)
+## Notifiche live (Twitch / TikTok / Kick)
 
-All'avvio il bot controlla periodicamente se gli streamer in `src/config/live.js`
-sono in live e, al passaggio da offline a online, manda un embed nel canale
-indicato da `LIVE_CHANNEL_ID`.
+Il bot controlla periodicamente se gli account monitorati sono in live e, al
+passaggio da offline a online, manda un embed nel canale indicato da
+`LIVE_CHANNEL_ID`.
 
+La lista si gestisce da Discord con `/live` (solo amministratori):
+
+| Comando | Cosa fa |
+|---|---|
+| `/live aggiungi piattaforma: account: [nome:]` | Aggiunge un account. In `account` va lo username, l'`@handle` o il link del canale. `nome` e' facoltativo: e' il nome mostrato nella notifica, default lo username. |
+| `/live rimuovi account:` | Toglie un account. Il campo suggerisce quelli in lista; scrivendo a mano, se lo stesso username esiste su due piattaforme, indica quale con `piattaforma:username` (es. `kick:salvinosalvo`). |
+| `/live lista` | Mostra gli account monitorati, divisi per piattaforma. |
+
+Le modifiche valgono subito: il monitor rilegge la lista a ogni giro di
+controllo, non serve riavviare il bot ne' rieseguire `npm run deploy`. La lista
+vive in `data/live.json` (percorso cambiabile con `LIVE_STORE_PATH`), quindi
+sopravvive ai riavvii e agli aggiornamenti dell'immagine Docker se `data/` e'
+su un volume.
+
+`src/config/live.js` e' solo il punto di partenza: viene copiato in
+`data/live.json` al primo avvio e da lì in poi comandano i comandi `/live`.
 Streamer preconfigurati:
 
 | Piattaforma | Account |
@@ -115,6 +133,7 @@ Streamer preconfigurati:
 | Twitch | [ydiablo93](https://www.twitch.tv/ydiablo93) |
 | Twitch | [bigtaurus94](https://www.twitch.tv/bigtaurus94) |
 | Twitch | [s4k3_tv](https://www.twitch.tv/s4k3_tv) |
+| Kick | [salvinosalvo](https://kick.com/salvinosalvo) |
 
 Setup minimo:
 
@@ -131,14 +150,17 @@ Comportamento:
 
 - Al **primo** controllo dopo un avvio/riavvio non manda nulla: registra solo lo
   stato attuale, cosi' un bot che riparte a meta' live non risparma il canale.
+  Stesso trattamento per un account appena aggiunto con `/live aggiungi`: se e'
+  già in live in quel momento non viene annunciato, il primo giro serve solo a
+  fotografare lo stato.
 - Notifica solo sul passaggio **offline -> live**. Finche' resta in live non
   ripete il messaggio.
 - Errori di rete o API vengono loggati e ritentati al giro successivo; il
   processo non cade.
 - Senza `LIVE_CHANNEL_ID` il monitor resta spento (warning in console).
-- Senza credenziali Twitch i soli account TikTok restano attivi.
-
-Per aggiungere o togliere streamer modifica `src/config/live.js` e riavvia.
+- Senza credenziali Twitch gli account TikTok e Kick restano attivi.
+- Con la lista vuota il monitor resta acceso e in attesa: appena arriva il primo
+  `/live aggiungi` ricomincia a controllare.
 
 ## Gerarchia reparto
 

@@ -3,6 +3,7 @@
 const { EmbedBuilder } = require('discord.js');
 const liveConfig = require('../config/live');
 const { optionalEnv } = require('./env');
+const { listStreamers, streamerKey } = require('./live-store');
 
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
 const TWITCH_STREAMS_URL = 'https://api.twitch.tv/helix/streams';
@@ -18,14 +19,6 @@ const KICK_UA =
 const COLOR_TWITCH = 0x9146ff;
 const COLOR_TIKTOK = 0x010101;
 const COLOR_KICK = 0x53fc18;
-
-/**
- * Chiave stabile per lo stato live di uno streamer.
- * @param {{ platform: string, id: string }} streamer
- */
-function streamerKey(streamer) {
-  return `${streamer.platform}:${streamer.id.toLowerCase()}`;
-}
 
 /**
  * Token app Twitch (client credentials) con cache in memoria.
@@ -520,9 +513,12 @@ function transitionAction(previous, key, isLive, meta) {
 
 /**
  * Avvia il loop di polling. Non lancia mai: errori loggati e ritentati.
+ * La lista streamer viene riletta a ogni giro, cosi' /live aggiungi e
+ * /live rimuovi fanno effetto senza riavviare il bot.
  * @param {import('discord.js').Client} client
  * @param {{
  *   streamers?: typeof liveConfig.streamers,
+ *   storePath?: string,
  *   channelId?: string,
  *   roleId?: string,
  *   pollIntervalMs?: number,
@@ -535,7 +531,11 @@ function transitionAction(previous, key, isLive, meta) {
  * }} [options]
  */
 function startLiveMonitor(client, options = {}) {
-  const streamers = options.streamers ?? liveConfig.streamers;
+  // options.streamers congela la lista (usato dai test); altrimenti comanda lo
+  // store, che i comandi /live riscrivono a bot acceso.
+  const readStreamers = options.streamers
+    ? () => options.streamers
+    : () => listStreamers(options.storePath);
   const channelId = options.channelId ?? optionalEnv('LIVE_CHANNEL_ID');
   const roleId = options.roleId ?? optionalEnv('LIVE_ROLE_ID');
   const pollIntervalMs = Math.max(
@@ -557,29 +557,32 @@ function startLiveMonitor(client, options = {}) {
     return { stop() {}, running: false };
   }
 
-  const twitchStreamers = streamers.filter(s => s.platform === 'twitch');
-  const tiktokStreamers = streamers.filter(s => s.platform === 'tiktok');
-  const kickStreamers = streamers.filter(s => s.platform === 'kick');
-
   let twitchAuth = null;
-  if (twitchStreamers.length > 0) {
-    if (!twitchClientId || !twitchClientSecret) {
-      console.warn(
-        'Live monitor: streamer Twitch configurati ma mancano TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET. ' +
-          'Crea un\'app su https://dev.twitch.tv/console. Solo TikTok verra\' controllato.',
-      );
-    } else {
-      twitchAuth = createTwitchAuth({
-        clientId: twitchClientId,
-        clientSecret: twitchClientSecret,
-        fetchImpl,
-      });
-    }
-  }
+  let warnedTwitchCreds = false;
 
-  if (!twitchAuth && tiktokStreamers.length === 0 && kickStreamers.length === 0) {
-    console.warn('Live monitor: nessun provider attivo, skip.');
-    return { stop() {}, running: false };
+  // Le credenziali Twitch servono solo se nella lista c'e' almeno un account
+  // Twitch, e la lista cambia a runtime: l'auth nasce al primo giro utile e il
+  // warning per le credenziali mancanti esce una volta sola.
+  function getTwitchAuth() {
+    if (twitchAuth) return twitchAuth;
+
+    if (!twitchClientId || !twitchClientSecret) {
+      if (!warnedTwitchCreds) {
+        warnedTwitchCreds = true;
+        console.warn(
+          'Live monitor: streamer Twitch in lista ma mancano TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET. ' +
+            'Crea un\'app su https://dev.twitch.tv/console. Gli account TikTok e Kick restano attivi.',
+        );
+      }
+      return null;
+    }
+
+    twitchAuth = createTwitchAuth({
+      clientId: twitchClientId,
+      clientSecret: twitchClientSecret,
+      fetchImpl,
+    });
+    return twitchAuth;
   }
 
   /** @type {Map<string, boolean>} */
@@ -600,20 +603,23 @@ function startLiveMonitor(client, options = {}) {
     return null;
   }
 
-  async function checkTwitch() {
-    if (!twitchAuth) return;
+  async function checkTwitch(twitchStreamers) {
+    if (twitchStreamers.length === 0) return;
+
+    const auth = getTwitchAuth();
+    if (!auth) return;
 
     const logins = twitchStreamers.map(s => s.id);
     let liveMap;
     try {
       liveMap = await fetchTwitchLive(logins, {
         clientId: twitchClientId,
-        getToken: () => twitchAuth.getToken(),
+        getToken: () => auth.getToken(),
         fetchImpl,
       });
     } catch (error) {
       if (error.code === 'TWITCH_UNAUTHORIZED') {
-        twitchAuth.invalidate();
+        auth.invalidate();
       }
       console.warn(`Live monitor Twitch: ${error.message}`);
       return;
@@ -636,7 +642,7 @@ function startLiveMonitor(client, options = {}) {
         try {
           users = await fetchTwitchUsers(logins, {
             clientId: twitchClientId,
-            getToken: () => twitchAuth.getToken(),
+            getToken: () => auth.getToken(),
             fetchImpl,
           });
         } catch {
@@ -668,7 +674,7 @@ function startLiveMonitor(client, options = {}) {
     }
   }
 
-  async function checkTikTok() {
+  async function checkTikTok(tiktokStreamers) {
     for (const streamer of tiktokStreamers) {
       if (stopped) return;
 
@@ -709,7 +715,7 @@ function startLiveMonitor(client, options = {}) {
     }
   }
 
-  async function checkKick() {
+  async function checkKick(kickStreamers) {
     for (const streamer of kickStreamers) {
       if (stopped) return;
 
@@ -767,13 +773,30 @@ function startLiveMonitor(client, options = {}) {
     }
   }
 
+  // Uno streamer rimosso dalla lista non deve lasciare il suo stato dietro:
+  // altrimenti la mappa cresce a ogni modifica e un account ri-aggiunto
+  // ripartirebbe da uno stato vecchio di ore.
+  function pruneState(streamers) {
+    const keys = new Set(streamers.map(streamerKey));
+
+    for (const key of previous.keys()) {
+      if (!keys.has(key)) previous.delete(key);
+    }
+    for (const key of meta.seeded) {
+      if (!keys.has(key)) meta.seeded.delete(key);
+    }
+  }
+
   async function tick() {
     if (stopped || ticking) return;
     ticking = true;
     try {
-      await checkTwitch();
-      await checkTikTok();
-      await checkKick();
+      const streamers = readStreamers();
+      pruneState(streamers);
+
+      await checkTwitch(streamers.filter(s => s.platform === 'twitch'));
+      await checkTikTok(streamers.filter(s => s.platform === 'tiktok'));
+      await checkKick(streamers.filter(s => s.platform === 'kick'));
     } catch (error) {
       console.warn(`Live monitor: errore imprevisto: ${error.message}`);
     } finally {
@@ -782,7 +805,8 @@ function startLiveMonitor(client, options = {}) {
   }
 
   console.log(
-    `Live monitor avviato: ${streamers.length} streamer, ogni ${Math.round(pollIntervalMs / 1000)}s, canale ${channelId}.`,
+    `Live monitor avviato: ${readStreamers().length} streamer in lista, ogni ` +
+      `${Math.round(pollIntervalMs / 1000)}s, canale ${channelId}.`,
   );
 
   // Prima passata subito (solo seed stato), poi intervallo.
