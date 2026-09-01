@@ -113,7 +113,7 @@ server che contiene il canale di `LIVE_CHANNEL_ID`):
 
 | Comando | Cosa fa |
 |---|---|
-| `/live aggiungi piattaforma: account: [nome:]` | Aggiunge un account. In `account` va lo username, l'`@handle` o il link del canale; un link di una piattaforma diversa da quella scelta viene rifiutato. `nome` e' facoltativo: e' il nome mostrato nella notifica, default lo username. |
+| `/live aggiungi piattaforma: account: [nome:]` | Aggiunge un account. In `account` va lo username, l'`@handle` o il link del **canale** (`twitch.tv/nome`, `tiktok.com/@nome`, `kick.com/nome`): un link di un'altra piattaforma, o che punta a un video, a una clip o a una sezione del sito, viene rifiutato. `nome` e' facoltativo: e' il nome mostrato nella notifica, default lo username. |
 | `/live rimuovi account:` | Toglie un account. Il campo suggerisce quelli in lista; scrivendo a mano serve il valore esatto (username, link o `piattaforma:username`, es. `kick:salvinosalvo`), perche' un pezzo di nome non cancelli l'account sbagliato. |
 | `/live lista` | Mostra gli account monitorati, divisi per piattaforma. |
 

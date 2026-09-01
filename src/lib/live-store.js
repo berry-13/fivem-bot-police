@@ -15,47 +15,82 @@ const DEFAULT_PATH = path.join(process.cwd(), 'data', 'live.json');
 const MAX_STREAMERS = 50;
 const MAX_DISPLAY_NAME = 60;
 
+// Accettiamo anche il link incollato al posto dello username: e' quello che un
+// admin ha sotto mano quando apre il canale dello streamer. Perche' un link
+// valga come account devono valere due cose: host di profilo della piattaforma
+// (niente clips.twitch.tv o link accorciati) e path della forma del profilo,
+// altrimenti twitch.tv/videos/1234567890 finirebbe in lista come account
+// "1234567890" e il bot controllerebbe un canale che non esiste.
 const PLATFORMS = {
   twitch: {
     label: 'Twitch',
     idPattern: /^[a-z0-9_]{4,25}$/,
     idHint: '4-25 caratteri tra lettere, numeri e underscore',
     profileUrl: id => `https://www.twitch.tv/${id}`,
+    domain: 'twitch.tv',
+    profileHosts: new Set(['twitch.tv', 'www.twitch.tv', 'm.twitch.tv']),
+    // Prime parti di path che sono sezioni del sito, non canali.
+    reservedPaths: new Set([
+      'about', 'broadcast', 'clips', 'collections', 'directory', 'downloads',
+      'drops', 'event', 'events', 'following', 'followers', 'friends', 'jobs',
+      'legal', 'moderator', 'p', 'popout', 'privacy', 'products', 'prime',
+      'search', 'settings', 'store', 'subs', 'team', 'teams', 'terms', 'turbo',
+      'u', 'video', 'videos', 'wallet',
+    ]),
+    profileFromPath(segments) {
+      const [first] = segments;
+      if (!first || first.startsWith('@')) return null;
+      return this.reservedPaths.has(first.toLowerCase()) ? null : first;
+    },
   },
   tiktok: {
     label: 'TikTok',
     idPattern: /^[a-z0-9_.]{2,24}$/,
     idHint: '2-24 caratteri tra lettere, numeri, punto e underscore',
     profileUrl: id => `https://www.tiktok.com/@${id}`,
+    domain: 'tiktok.com',
+    profileHosts: new Set(['tiktok.com', 'www.tiktok.com', 'm.tiktok.com']),
+    profileFromPath(segments) {
+      // Su TikTok il profilo e' sempre /@handle: senza chiocciola e' un video,
+      // un tag o una pagina del sito.
+      const handle = segments.find(segment => segment.startsWith('@'));
+      return handle ? handle.slice(1) : null;
+    },
   },
   kick: {
     label: 'Kick',
     idPattern: /^[a-z0-9_-]{3,25}$/,
     idHint: '3-25 caratteri tra lettere, numeri, trattino e underscore',
     profileUrl: id => `https://kick.com/${id}`,
+    domain: 'kick.com',
+    profileHosts: new Set(['kick.com', 'www.kick.com']),
+    reservedPaths: new Set([
+      'about', 'browse', 'categories', 'category', 'clip', 'clips', 'dashboard',
+      'following', 'help', 'popout', 'privacy', 'search', 'settings',
+      'subscriptions', 'terms', 'video', 'videos',
+    ]),
+    profileFromPath(segments) {
+      const [first] = segments;
+      if (!first || first.startsWith('@')) return null;
+      return this.reservedPaths.has(first.toLowerCase()) ? null : first;
+    },
   },
 };
 
-// Accettiamo anche il link incollato al posto dello username: e' quello che
-// un admin ha sotto mano quando apre il canale dello streamer. L'host dice
-// anche di quale piattaforma e' il link, cosi' un link Kick incollato mentre
-// si e' scelto Twitch viene rifiutato invece di finire nella lista sbagliata.
-const PLATFORM_URL_RE = /^(?:[a-z]+:\/\/)?(?:[\w-]+\.)*(twitch\.tv|tiktok\.com|kick\.com)\//i;
-const PLATFORM_BY_HOST = {
-  'twitch.tv': 'twitch',
-  'tiktok.com': 'tiktok',
-  'kick.com': 'kick',
-};
-const URL_NOISE_SEGMENTS = new Set([
-  'about',
-  'channel',
-  'clips',
-  'live',
-  'schedule',
-  'streams',
-  'video',
-  'videos',
-]);
+// host -> piattaforma, per i soli host di profilo.
+const PLATFORM_BY_PROFILE_HOST = new Map(
+  Object.entries(PLATFORMS).flatMap(([platform, meta]) =>
+    [...meta.profileHosts].map(host => [host, platform]),
+  ),
+);
+
+// dominio -> piattaforma: serve a riconoscere che un link e' "di Twitch" anche
+// quando l'host non e' quello di un profilo (clips.twitch.tv, player....).
+const PLATFORM_BY_DOMAIN = new Map(
+  Object.entries(PLATFORMS).map(([platform, meta]) => [meta.domain, platform]),
+);
+
+const URL_SHAPE_RE = /^(?:[a-z][a-z0-9+.-]*:\/\/)?([a-z0-9._-]+)(\/[^\s]*)?$/i;
 
 function resolveStorePath(customPath) {
   return customPath || process.env.LIVE_STORE_PATH || DEFAULT_PATH;
@@ -77,9 +112,29 @@ function normalizePlatform(value) {
 }
 
 /**
- * Legge uno username, un @handle o un link: torna lo username e, se l'input
- * era un link, la piattaforma a cui quel link appartiene. Non valida la forma
- * dello username: ci pensa normalizeStreamer col pattern della piattaforma.
+ * Riconosce il dominio di una piattaforma dentro un host, anche quando l'host
+ * non e' quello di un profilo (clips.twitch.tv, player.twitch.tv, ...).
+ * @param {string} host
+ */
+function platformFromHost(host) {
+  const diretto = PLATFORM_BY_PROFILE_HOST.get(host);
+  if (diretto) return { platform: diretto, profileHost: true };
+
+  for (const [domain, platform] of PLATFORM_BY_DOMAIN) {
+    if (host === domain || host.endsWith(`.${domain}`)) {
+      return { platform, profileHost: false };
+    }
+  }
+
+  return { platform: null, profileHost: false };
+}
+
+/**
+ * Legge uno username, un @handle o un link al canale: torna lo username e, se
+ * l'input era un link, la piattaforma di quel link. Un link accettato deve
+ * avere host e path della forma del profilo, altrimenti l'id torna vuoto.
+ * Non valida la forma dello username: ci pensa normalizeStreamer col pattern
+ * della piattaforma.
  * @param {unknown} raw
  * @returns {{ id: string, platform: string | null }} id vuoto se non estraibile
  */
@@ -95,33 +150,31 @@ function parseAccountInput(raw) {
   value = value.split(/[?#]/)[0].trim();
   if (!value) return { id: '', platform: null };
 
-  const url = value.match(PLATFORM_URL_RE);
-  if (url) {
-    const segments = value
-      .replace(/^[a-z]+:\/\//i, '')
+  const url = value.match(URL_SHAPE_RE);
+  const host = url?.[1].toLowerCase() ?? '';
+  const { platform, profileHost } = platformFromHost(host);
+
+  if (platform) {
+    // Host della piattaforma senza path di profilo (o host non di profilo):
+    // sappiamo di che piattaforma si tratta ma non chi e' il canale.
+    if (!profileHost || !url[2]) return { id: '', platform };
+
+    const segments = url[2]
       .split('/')
-      // Fuori l'host: restano solo i pezzi di path.
-      .slice(1)
       .map(segment => segment.trim())
       .filter(Boolean);
+    const handle = PLATFORMS[platform].profileFromPath(segments);
 
-    // Su TikTok l'handle e' il segmento con la chiocciola, altrove e' il primo
-    // che non sia una sezione del sito (/live, /videos, ...).
-    const handle =
-      segments.find(segment => segment.startsWith('@')) ??
-      segments.find(segment => !URL_NOISE_SEGMENTS.has(segment.toLowerCase()));
-
-    return {
-      id: (handle ?? '').replace(/^@+/, '').toLowerCase(),
-      platform: PLATFORM_BY_HOST[url[1].toLowerCase()] ?? null,
-    };
+    return { id: (handle ?? '').replace(/^@+/, '').toLowerCase(), platform };
   }
 
   if (value.includes('/')) {
-    // Un path di un dominio che non monitoriamo: meglio rifiutare che
-    // indovinare un pezzo qualunque dell'url.
+    // Url di un dominio che non monitoriamo: meglio rifiutare che indovinare un
+    // pezzo qualunque del path.
     return { id: '', platform: null };
   }
+
+  // Username secco. Il punto resta ammesso: negli handle TikTok e' legittimo.
 
   return { id: value.replace(/^@+/, '').toLowerCase(), platform: null };
 }

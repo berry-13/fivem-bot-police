@@ -704,3 +704,137 @@ test('startLiveMonitor non annuncia un account rimosso mentre il giro era in cor
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('monitor.forget rimette a zero un account rimosso e riaggiunto', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-forget-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed: offline
+    assert.equal(monitor._previous.get('kick:salvinosalvo'), false);
+
+    // Rimosso e riaggiunto tra due giri (es. per cambiare il nome mostrato):
+    // la chiave e' la stessa, quindi pruneState non vede il buco. Senza forget
+    // il nuovo ingresso eredita "offline" e, essendo già in live, verrebbe
+    // annunciato al giro dopo.
+    scrivi([{ platform: 'kick', id: 'salvinosalvo', displayName: 'Salvino' }]);
+    monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
+    kickLive = true;
+
+    await monitor._tick();
+    assert.equal(inviati.length, 0);
+    assert.equal(monitor._previous.get('kick:salvinosalvo'), true);
+
+    // Da qui in poi funziona come un account nuovo: annuncia solo il prossimo
+    // passaggio offline -> live.
+    kickLive = false;
+    await monitor._tick();
+    kickLive = true;
+    await monitor._tick();
+    assert.equal(inviati.length, 1);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('startLiveMonitor non annuncia se la rimozione arriva mentre risolve il canale', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-race2-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+
+  let rimuoviDuranteFetchCanale = false;
+  const client = {
+    channels: {
+      // Canale fuori cache: ogni giro passa dalla fetch, che qui e' la finestra
+      // in cui /live rimuovi puo' completare.
+      cache: { get: () => undefined },
+      fetch: async () => {
+        if (rimuoviDuranteFetchCanale) scrivi([]);
+        return channel;
+      },
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline
+
+    kickLive = true;
+    rimuoviDuranteFetchCanale = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 0);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

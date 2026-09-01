@@ -20,7 +20,7 @@ const {
   streamerKey,
 } = require('../../lib/live-store');
 const { optionalEnv } = require('../../lib/env');
-const { safeInteractionReply } = require('../../lib/safe-reply');
+const { safeDeferReply, safeInteractionReply } = require('../../lib/safe-reply');
 
 const PLATFORM_CHOICES = Object.entries(PLATFORMS).map(([value, meta]) => ({
   name: meta.label,
@@ -86,6 +86,11 @@ module.exports = {
       return;
     }
 
+    // Ack immediato: se il canale delle notifiche non e' in cache il controllo
+    // qui sotto fa una fetch a Discord, e i 3 secondi dell'interazione
+    // scadrebbero prima di qualunque risposta.
+    await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+
     const stato = await statoGuildDelleLive(interaction);
 
     if (stato === 'altro-server') {
@@ -128,8 +133,10 @@ module.exports = {
    */
   async autocomplete(interaction) {
     const focused = interaction.options.getFocused();
+    // Qui non si puo' fare defer e la finestra e' di pochi secondi: controllo
+    // solo sulla cache, senza fetch. Canale non in cache = nessun suggerimento.
     const consentito =
-      interaction.inGuild() && (await statoGuildDelleLive(interaction)) === 'ok';
+      interaction.inGuild() && (await statoGuildDelleLive(interaction, { soloCache: true })) === 'ok';
     const choices = (consentito ? matchStreamers(listStreamers(), focused) : [])
       .slice(0, MAX_AUTOCOMPLETE_CHOICES)
       .map(streamer => ({
@@ -147,12 +154,19 @@ module.exports = {
   },
 };
 
-function replyEphemeral(interaction, content) {
-  return safeInteractionReply(interaction, {
-    content,
-    flags: MessageFlags.Ephemeral,
-    allowedMentions: { parse: [] },
-  });
+/**
+ * Risposta solo per chi ha lanciato il comando. Dopo un defer il messaggio si
+ * modifica (ed e' già ephemeral): rimandare il flag farebbe litigare l'API.
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction
+ * @param {string | object} payload testo o corpo completo
+ */
+function replyEphemeral(interaction, payload) {
+  const corpo = typeof payload === 'string' ? { content: payload } : payload;
+  const finale = { allowedMentions: { parse: [] }, ...corpo };
+  if (!interaction.deferred && !interaction.replied) {
+    finale.flags = MessageFlags.Ephemeral;
+  }
+  return safeInteractionReply(interaction, finale);
 }
 
 /**
@@ -167,13 +181,14 @@ function replyEphemeral(interaction, content) {
  * @param {import('discord.js').BaseInteraction} interaction
  * @returns {Promise<'ok' | 'altro-server' | 'non-verificabile'>}
  */
-async function statoGuildDelleLive(interaction) {
+async function statoGuildDelleLive(interaction, { soloCache = false } = {}) {
   const channelId = optionalEnv('LIVE_CHANNEL_ID');
   if (!channelId) return 'ok';
 
   const cached = interaction.client.channels.cache.get(channelId);
   const channel =
-    cached ?? (await interaction.client.channels.fetch(channelId).catch(() => null));
+    cached ??
+    (soloCache ? null : await interaction.client.channels.fetch(channelId).catch(() => null));
   if (!channel?.guildId) return 'non-verificabile';
 
   return channel.guildId === interaction.guildId ? 'ok' : 'altro-server';
@@ -191,7 +206,8 @@ function addErrorMessage(result) {
     case 'id':
       return (
         `❌ Username non valido per ${platformLabel(result.platform)}: serve ${PLATFORMS[result.platform].idHint}. ` +
-        'Puoi incollare anche il link del canale.'
+        `Va bene anche il link del canale (${PLATFORMS[result.platform].profileUrl('nome')}), ` +
+        'ma non quello di un video, di una clip o di una sezione del sito.'
       );
     case 'mismatch':
       return (
@@ -218,6 +234,12 @@ async function handleAdd(interaction) {
     await replyEphemeral(interaction, addErrorMessage(result));
     return;
   }
+
+  // Lo stato in memoria del monitor puo' avere ancora la voce di un giro
+  // precedente (tipico: rimosso e riaggiunto per cambiare il nome mostrato).
+  // Azzerarla e' quello che tiene la promessa: chi entra viene solo fotografato,
+  // non annunciato se e' già in live.
+  interaction.client.liveMonitor?.forget?.(result.streamer);
 
   await replyEphemeral(
     interaction,
@@ -273,6 +295,10 @@ async function handleRemove(interaction) {
     );
     return;
   }
+
+  // Via anche lo stato in memoria: un giro in corso non lo annuncia (controlla
+  // la lista prima di inviare) e una riaggiunta ripartirebbe da zero comunque.
+  interaction.client.liveMonitor?.forget?.(result.streamer);
 
   await replyEphemeral(
     interaction,
@@ -331,9 +357,5 @@ async function handleList(interaction) {
     });
   }
 
-  await safeInteractionReply(interaction, {
-    embeds: [embed],
-    flags: MessageFlags.Ephemeral,
-    allowedMentions: { parse: [] },
-  });
+  await replyEphemeral(interaction, { embeds: [embed] });
 }

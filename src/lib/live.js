@@ -554,7 +554,7 @@ function startLiveMonitor(client, options = {}) {
       'Live monitor disattivato: manca LIVE_CHANNEL_ID. ' +
         'Imposta l\'id del canale Discord dove mandare le notifiche.',
     );
-    return { stop() {}, running: false };
+    return { stop() {}, forget() {}, running: false };
   }
 
   let twitchAuth = null;
@@ -651,8 +651,6 @@ function startLiveMonitor(client, options = {}) {
       }
 
       const user = users.get(login);
-      if (!ancoraInLista(streamer)) continue;
-
       const channel = await resolveChannel();
       if (!channel) continue;
 
@@ -666,6 +664,10 @@ function startLiveMonitor(client, options = {}) {
         roleId,
         guildId: channel.guild?.id,
       });
+
+      // Ultimo controllo attaccato all'invio: resolveChannel puo' aver aspettato
+      // una fetch, e nel frattempo /live rimuovi puo' essere passato.
+      if (!ancoraInLista(streamer)) continue;
 
       try {
         await channel.send(payload);
@@ -693,8 +695,6 @@ function startLiveMonitor(client, options = {}) {
       const action = transitionAction(previous, key, isLive, meta);
       if (action !== 'notify') continue;
 
-      if (!ancoraInLista(streamer)) continue;
-
       const channel = await resolveChannel();
       if (!channel) continue;
 
@@ -709,6 +709,8 @@ function startLiveMonitor(client, options = {}) {
         roleId,
         guildId: channel.guild?.id,
       });
+
+      if (!ancoraInLista(streamer)) continue;
 
       try {
         await channel.send(payload);
@@ -750,8 +752,6 @@ function startLiveMonitor(client, options = {}) {
         continue;
       }
 
-      if (!ancoraInLista(streamer)) continue;
-
       const channel = await resolveChannel();
       if (!channel) continue;
 
@@ -768,6 +768,8 @@ function startLiveMonitor(client, options = {}) {
         roleId,
         guildId: channel.guild?.id,
       });
+
+      if (!ancoraInLista(streamer)) continue;
 
       try {
         await channel.send(payload);
@@ -791,6 +793,17 @@ function startLiveMonitor(client, options = {}) {
     for (const key of meta.seeded) {
       if (!keys.has(key)) meta.seeded.delete(key);
     }
+  }
+
+  // Rimozione e riaggiunta tra due giri (tipico: cambiare il nome mostrato)
+  // lasciano la chiave identica, quindi pruneState non vede il buco e il nuovo
+  // ingresso eredita lo stato vecchio: un account offline nello stato ma già in
+  // live verrebbe annunciato, contro la regola "chi entra viene solo
+  // fotografato". I comandi /live chiamano questo per azzerare la voce.
+  function forget(streamer) {
+    const key = streamerKey(streamer);
+    previous.delete(key);
+    meta.seeded.delete(key);
   }
 
   // Un giro di controllo puo' restare appeso su una richiesta di rete o su
@@ -843,6 +856,7 @@ function startLiveMonitor(client, options = {}) {
       stopped = true;
       clearIntervalFn(timer);
     },
+    forget,
     // Esposti per i test.
     _tick: tick,
     _previous: previous,

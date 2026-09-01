@@ -47,13 +47,15 @@ function listaSuDisco() {
 function fakeInteraction(sub, valori = {}, opzioni = {}) {
   const risposte = [];
   const suggerimenti = [];
+  const dimenticati = [];
   const guildId = opzioni.guildId ?? 'guild-1';
   // Il canale delle notifiche decide quale server puo' gestire la lista.
   const liveChannel = 'liveChannel' in opzioni ? opzioni.liveChannel : { guildId: 'guild-1' };
 
-  return {
+  const interaction = {
     risposte,
     suggerimenti,
+    dimenticati,
     replied: false,
     deferred: false,
     guildId,
@@ -66,11 +68,20 @@ function fakeInteraction(sub, valori = {}, opzioni = {}) {
           return liveChannel;
         },
       },
+      liveMonitor: {
+        forget: streamer => dimenticati.push(streamer),
+      },
     },
     options: {
       getSubcommand: () => sub,
       getString: nome => valori[nome] ?? null,
       getFocused: () => valori.focused ?? '',
+    },
+    deferReply: async () => {
+      interaction.deferred = true;
+    },
+    editReply: async payload => {
+      risposte.push(payload);
     },
     reply: async payload => {
       risposte.push(payload);
@@ -79,6 +90,8 @@ function fakeInteraction(sub, valori = {}, opzioni = {}) {
       suggerimenti.push(...choices);
     },
   };
+
+  return interaction;
 }
 
 test('/live aggiungi accetta il link del canale e salva su disco', async () => {
@@ -315,4 +328,34 @@ test('/live autocomplete resta muto se il canale non e\' verificabile', async ()
   await live.autocomplete(interaction);
 
   assert.deepEqual(interaction.suggerimenti, []);
+});
+
+test('/live fa defer prima di andare a chiedere il canale a Discord', async () => {
+  saveStreamers([], storePath);
+
+  // Canale fuori cache: il controllo fa una fetch, e senza ack i 3 secondi
+  // dell'interazione possono finire prima di qualunque risposta.
+  const interaction = fakeInteraction(
+    'lista',
+    {},
+    { inCache: false, liveChannel: { guildId: 'guild-1' } },
+  );
+
+  await live.execute(interaction);
+
+  assert.equal(interaction.deferred, true);
+  // Dopo il defer il messaggio si modifica: niente flag ephemeral di nuovo.
+  assert.equal('flags' in interaction.risposte[0], false);
+});
+
+test('/live azzera lo stato del monitor su aggiunta e rimozione', async () => {
+  saveStreamers([], storePath);
+
+  const aggiunta = fakeInteraction('aggiungi', { piattaforma: 'kick', account: 'salvinosalvo' });
+  await live.execute(aggiunta);
+  assert.deepEqual(aggiunta.dimenticati, [{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const rimozione = fakeInteraction('rimuovi', { account: 'kick:salvinosalvo' });
+  await live.execute(rimozione);
+  assert.deepEqual(rimozione.dimenticati, [{ platform: 'kick', id: 'salvinosalvo' }]);
 });

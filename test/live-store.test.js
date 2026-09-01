@@ -274,3 +274,50 @@ test('resolveStreamers pretende un match esatto', () => {
   assert.deepEqual(resolveStreamers(streamers, ''), []);
   assert.equal(matchStreamers(streamers, 'salvi').length, 2);
 });
+
+test('parseAccountInput accetta solo i link che sono davvero profili', () => {
+  // Sezioni del sito: "1234567890" passerebbe come login Twitch valido.
+  assert.deepEqual(parseAccountInput('https://www.twitch.tv/videos/1234567890'), {
+    id: '',
+    platform: 'twitch',
+  });
+  // Host che non ospita profili.
+  assert.deepEqual(parseAccountInput('https://clips.twitch.tv/FancyClipSlug'), {
+    id: '',
+    platform: 'twitch',
+  });
+  // Su TikTok il profilo e' /@handle: un video non e' un account.
+  assert.deepEqual(parseAccountInput('https://www.tiktok.com/video/7300000000000000000'), {
+    id: '',
+    platform: 'tiktok',
+  });
+  assert.deepEqual(parseAccountInput('https://kick.com/categories/gta-v'), {
+    id: '',
+    platform: 'kick',
+  });
+  // Dominio senza path: sappiamo la piattaforma, non il canale.
+  assert.deepEqual(parseAccountInput('twitch.tv'), { id: '', platform: 'twitch' });
+
+  // I link di profilo continuano a funzionare, anche con una sezione in coda.
+  assert.deepEqual(parseAccountInput('https://m.twitch.tv/ydiablo93/videos'), {
+    id: 'ydiablo93',
+    platform: 'twitch',
+  });
+  assert.deepEqual(parseAccountInput('https://www.tiktok.com/@xx_cicci_xx/live'), {
+    id: 'xx_cicci_xx',
+    platform: 'tiktok',
+  });
+});
+
+test('addStreamer rifiuta un link che non e\' un profilo', () => {
+  saveStreamers([], storePath);
+
+  const result = addStreamer(
+    { platform: 'twitch', id: 'https://www.twitch.tv/videos/1234567890' },
+    storePath,
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'id');
+  assert.deepEqual(readFile().streamers, []);
+});
