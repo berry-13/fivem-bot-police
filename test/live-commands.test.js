@@ -359,3 +359,28 @@ test('/live azzera lo stato del monitor su aggiunta e rimozione', async () => {
   await live.execute(rimozione);
   assert.deepEqual(rimozione.dimenticati, [{ platform: 'kick', id: 'salvinosalvo' }]);
 });
+
+test('/live non tocca la lista se Discord non riconosce l\'interazione', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  const originalError = console.error;
+  console.error = () => {};
+
+  // 10062: interazione già scaduta. Senza l'uscita anticipata la lista
+  // cambierebbe senza che l'admin possa vedere nessuna conferma.
+  const interaction = fakeInteraction('rimuovi', { account: 'twitch:salvinosalvo' });
+  interaction.deferReply = async () => {
+    const error = new Error('Unknown interaction');
+    error.code = 10062;
+    throw error;
+  };
+
+  try {
+    await live.execute(interaction);
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(interaction.risposte, []);
+  assert.deepEqual(listaSuDisco(), ['twitch:salvinosalvo']);
+});

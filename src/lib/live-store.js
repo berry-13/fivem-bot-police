@@ -10,8 +10,9 @@ const liveConfig = require('../config/live');
 // restart. Forma su disco: { streamers: [{ platform, id, displayName? }] }
 const DEFAULT_PATH = path.join(process.cwd(), 'data', 'live.json');
 
-// Ogni account aggiunto e' una chiamata HTTP in piu' a ogni giro di polling:
-// il tetto evita che una lista fuori controllo mandi il loop fuori tempo.
+// Ogni account e' una richiesta in piu' a ogni giro di polling. Il tetto tiene
+// la lista in una misura sensata per un server; a contenere la durata del giro
+// pensano il limite di richieste in volo e i timeout in src/lib/live.js.
 const MAX_STREAMERS = 50;
 const MAX_DISPLAY_NAME = 60;
 

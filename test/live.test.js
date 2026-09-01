@@ -838,3 +838,55 @@ test('startLiveMonitor non annuncia se la rimozione arriva mentre risolve il can
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('startLiveMonitor interroga i provider a lotti, senza fila indiana', async () => {
+  const channel = { isTextBased: () => true, send: async () => {} };
+  const client = {
+    channels: {
+      cache: { get: () => channel },
+      fetch: async () => channel,
+    },
+  };
+
+  let inVolo = 0;
+  let massimoInVolo = 0;
+  let completate = 0;
+
+  // Ogni richiesta resta appesa un giro di event loop: se il monitor lavorasse
+  // in fila indiana il massimo in volo sarebbe 1, e con 12 account lenti un
+  // giro durerebbe 12 timeout invece di 3 lotti.
+  const fetchImpl = async () => {
+    inVolo += 1;
+    massimoInVolo = Math.max(massimoInVolo, inVolo);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    inVolo -= 1;
+    completate += 1;
+    return { ok: true, async json() { return { livestream: null }; } };
+  };
+
+  const streamers = Array.from({ length: 12 }, (_, i) => ({
+    platform: 'kick',
+    id: `canale-${String(i).padStart(2, '0')}`,
+  }));
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+
+    assert.equal(completate, 12);
+    assert.ok(massimoInVolo > 1, `atteso piu' di una richiesta in volo, viste ${massimoInVolo}`);
+    // E il tetto va rispettato: niente 12 richieste tutte insieme.
+    assert.ok(massimoInVolo <= 4, `atteso al massimo 4 richieste in volo, viste ${massimoInVolo}`);
+  } finally {
+    monitor.stop();
+  }
+});

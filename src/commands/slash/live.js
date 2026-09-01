@@ -88,8 +88,14 @@ module.exports = {
 
     // Ack immediato: se il canale delle notifiche non e' in cache il controllo
     // qui sotto fa una fetch a Discord, e i 3 secondi dell'interazione
-    // scadrebbero prima di qualunque risposta.
-    await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+    // scadrebbero prima di qualunque risposta. Se l'ack non passa ci fermiamo:
+    // toccare la lista senza poter confermare niente lascerebbe l'admin a
+    // indovinare se il comando e' andato, e a ritentare su uno stato già
+    // cambiato. Il messaggio del fallimento lo logga safeDeferReply.
+    if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) {
+      console.warn('/live: comando annullato, interazione non riconosciuta da Discord.');
+      return;
+    }
 
     const stato = await statoGuildDelleLive(interaction);
 

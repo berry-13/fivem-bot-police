@@ -20,6 +20,10 @@ const COLOR_TWITCH = 0x9146ff;
 const COLOR_TIKTOK = 0x010101;
 const COLOR_KICK = 0x53fc18;
 
+// Richieste in volo per i provider che si interrogano un account alla volta
+// (TikTok e Kick). Twitch chiede tutti i login in una sola chiamata.
+const PROVIDER_CONCURRENCY = 4;
+
 /**
  * Token app Twitch (client credentials) con cache in memoria.
  * @param {{ clientId: string, clientSecret: string, fetchImpl?: typeof fetch }} opts
@@ -229,9 +233,9 @@ function parseTikTokRoomPayload(payload, username) {
  * Controlla se un account TikTok e' in live.
  * Usa l'endpoint pubblico room; se fallisce, prova a leggere la pagina live.
  * @param {string} username senza @
- * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
  */
-async function fetchTikTokLive(username, { fetchImpl = fetch } = {}) {
+async function fetchTikTokLive(username, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const clean = username.replace(/^@/, '').trim();
   if (!clean) return { live: false };
 
@@ -246,7 +250,8 @@ async function fetchTikTokLive(username, { fetchImpl = fetch } = {}) {
   try {
     const roomUrl =
       `https://www.tiktok.com/api-live/user/room/?aid=1988&sourceType=54&uniqueId=${encodeURIComponent(clean)}`;
-    const response = await fetchImpl(roomUrl, { headers });
+    // Senza timeout una richiesta appesa blocca tutto il giro di polling.
+    const response = await fetchImpl(roomUrl, { headers, signal: AbortSignal.timeout(timeoutMs) });
     if (response.ok) {
       const json = await response.json();
       const parsed = parseTikTokRoomPayload(json, clean);
@@ -269,6 +274,7 @@ async function fetchTikTokLive(username, { fetchImpl = fetch } = {}) {
         Accept: 'text/html,application/xhtml+xml',
       },
       redirect: 'follow',
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
@@ -679,24 +685,22 @@ function startLiveMonitor(client, options = {}) {
   }
 
   async function checkTikTok(tiktokStreamers) {
-    for (const streamer of tiktokStreamers) {
-      if (stopped) return;
-
+    await inParallelo(tiktokStreamers, async streamer => {
       const key = streamerKey(streamer);
       let info;
       try {
         info = await fetchTikTokLive(streamer.id, { fetchImpl });
       } catch (error) {
         console.warn(`Live monitor TikTok ${streamer.id}: ${error.message}`);
-        continue;
+        return;
       }
 
       const isLive = Boolean(info?.live);
       const action = transitionAction(previous, key, isLive, meta);
-      if (action !== 'notify') continue;
+      if (action !== 'notify') return;
 
       const channel = await resolveChannel();
-      if (!channel) continue;
+      if (!channel) return;
 
       const payload = buildLiveNotification({
         platform: 'tiktok',
@@ -710,7 +714,7 @@ function startLiveMonitor(client, options = {}) {
         guildId: channel.guild?.id,
       });
 
-      if (!ancoraInLista(streamer)) continue;
+      if (!ancoraInLista(streamer)) return;
 
       try {
         await channel.send(payload);
@@ -718,20 +722,18 @@ function startLiveMonitor(client, options = {}) {
       } catch (error) {
         console.warn(`Live monitor: invio fallito per TikTok ${streamer.id}: ${error.message}`);
       }
-    }
+    });
   }
 
   async function checkKick(kickStreamers) {
-    for (const streamer of kickStreamers) {
-      if (stopped) return;
-
+    await inParallelo(kickStreamers, async streamer => {
       const key = streamerKey(streamer);
       let info;
       try {
         info = await fetchKickLive(streamer.id, { fetchImpl });
       } catch (error) {
         console.warn(`Live monitor Kick ${streamer.id}: ${error.message}`);
-        continue;
+        return;
       }
 
       const isLive = Boolean(info?.live);
@@ -743,17 +745,17 @@ function startLiveMonitor(client, options = {}) {
       if (!meta.seeded.has(key)) {
         meta.seeded.add(key);
         previous.set(key, isLive);
-        continue;
+        return;
       }
 
       const wasLive = previous.get(key) === true;
       if (!isLive || wasLive) {
         previous.set(key, isLive);
-        continue;
+        return;
       }
 
       const channel = await resolveChannel();
-      if (!channel) continue;
+      if (!channel) return;
 
       const payload = buildLiveNotification({
         platform: 'kick',
@@ -769,7 +771,7 @@ function startLiveMonitor(client, options = {}) {
         guildId: channel.guild?.id,
       });
 
-      if (!ancoraInLista(streamer)) continue;
+      if (!ancoraInLista(streamer)) return;
 
       try {
         await channel.send(payload);
@@ -778,7 +780,27 @@ function startLiveMonitor(client, options = {}) {
       } catch (error) {
         console.warn(`Live monitor: invio fallito per Kick ${streamer.id}: ${error.message}`);
       }
-    }
+    });
+  }
+
+  // TikTok e Kick vanno interrogati un account alla volta: in fila indiana una
+  // lista piena di richieste lente terrebbe occupato un giro per minuti, e i
+  // giri successivi finirebbero scartati dal guard "ticking". Un tetto di
+  // richieste in volo tiene il giro dentro tempi sensati senza martellare gli
+  // endpoint pubblici.
+  async function inParallelo(streamers, worker) {
+    const coda = [...streamers];
+    const corsie = Math.min(PROVIDER_CONCURRENCY, coda.length);
+
+    await Promise.all(
+      Array.from({ length: corsie }, async () => {
+        while (!stopped) {
+          const streamer = coda.shift();
+          if (!streamer) return;
+          await worker(streamer);
+        }
+      }),
+    );
   }
 
   // Uno streamer rimosso dalla lista non deve lasciare il suo stato dietro:
