@@ -634,3 +634,73 @@ test('startLiveMonitor parte anche con la lista vuota, in attesa di /live aggiun
   assert.equal(monitor.running, true);
   monitor.stop();
 });
+
+test('startLiveMonitor non annuncia un account rimosso mentre il giro era in corso', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-race-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickLive = false;
+  let rimuoviDurante = false;
+  const fetchImpl = async () => {
+    // La rimozione arriva mentre il tick e' appeso su questa richiesta: e' il
+    // caso in cui il tick lavora ancora sulla lista vecchia.
+    if (rimuoviDurante) scrivi([]);
+    return {
+      ok: true,
+      async json() {
+        return kickLive
+          ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+          : { livestream: null };
+      },
+    };
+  };
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline
+    assert.equal(inviati.length, 0);
+
+    kickLive = true;
+    rimuoviDurante = true;
+    await monitor._tick();
+
+    // Offline -> live, ma l'account non e' piu' in lista: niente annuncio.
+    assert.equal(inviati.length, 0);
+
+    // E lo stato del rimosso non resta appeso.
+    rimuoviDurante = false;
+    await monitor._tick();
+    assert.deepEqual([...monitor._previous.keys()], []);
+    assert.equal(inviati.length, 0);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

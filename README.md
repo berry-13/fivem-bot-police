@@ -123,6 +123,11 @@ vive in `data/live.json` (percorso cambiabile con `LIVE_STORE_PATH`), quindi
 sopravvive ai riavvii e agli aggiornamenti dell'immagine Docker se `data/` e'
 su un volume.
 
+Se `LIVE_CHANNEL_ID` e' valorizzato ma il bot non riesce a risalire al server di
+quel canale (id sbagliato, canale cancellato, permessi mancanti), `/live`
+rifiuta di lavorare e lo dice: meglio un comando fermo che una lista modificabile
+da un server qualsiasi mentre il controllo non e' verificabile.
+
 `src/config/live.js` e' solo il punto di partenza: viene copiato in
 `data/live.json` al primo avvio e da lì in poi comandano i comandi `/live`.
 Streamer preconfigurati:

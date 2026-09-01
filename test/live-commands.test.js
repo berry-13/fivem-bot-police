@@ -49,7 +49,7 @@ function fakeInteraction(sub, valori = {}, opzioni = {}) {
   const suggerimenti = [];
   const guildId = opzioni.guildId ?? 'guild-1';
   // Il canale delle notifiche decide quale server puo' gestire la lista.
-  const liveChannel = opzioni.liveChannel ?? { guildId: 'guild-1' };
+  const liveChannel = 'liveChannel' in opzioni ? opzioni.liveChannel : { guildId: 'guild-1' };
 
   return {
     risposte,
@@ -60,8 +60,11 @@ function fakeInteraction(sub, valori = {}, opzioni = {}) {
     inGuild: () => opzioni.inGuild ?? true,
     client: {
       channels: {
-        cache: { get: () => liveChannel ?? undefined },
-        fetch: async () => liveChannel ?? null,
+        cache: { get: () => (opzioni.inCache === false ? undefined : liveChannel ?? undefined) },
+        fetch: async () => {
+          if (opzioni.fetchFallisce) throw new Error('Missing Access');
+          return liveChannel;
+        },
       },
     },
     options: {
@@ -277,6 +280,37 @@ test('/live autocomplete non suggerisce niente da un altro server', async () => 
   saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
 
   const interaction = fakeInteraction('rimuovi', { focused: '' }, { guildId: 'guild-2' });
+
+  await live.autocomplete(interaction);
+
+  assert.deepEqual(interaction.suggerimenti, []);
+});
+
+test('/live si blocca se non riesce a verificare il canale delle notifiche', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  // Canale fuori cache e fetch che fallisce: senza fail closed questa finestra
+  // sarebbe il momento in cui un altro server puo' riscrivere la lista.
+  const interaction = fakeInteraction(
+    'rimuovi',
+    { account: 'twitch:salvinosalvo' },
+    { guildId: 'guild-2', inCache: false, fetchFallisce: true },
+  );
+
+  await live.execute(interaction);
+
+  assert.match(interaction.risposte[0].content, /non riesco a risalire al server/i);
+  assert.deepEqual(listaSuDisco(), ['twitch:salvinosalvo']);
+});
+
+test('/live autocomplete resta muto se il canale non e\' verificabile', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  const interaction = fakeInteraction(
+    'rimuovi',
+    { focused: '' },
+    { inCache: false, liveChannel: null },
+  );
 
   await live.autocomplete(interaction);
 

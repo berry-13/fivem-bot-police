@@ -651,6 +651,8 @@ function startLiveMonitor(client, options = {}) {
       }
 
       const user = users.get(login);
+      if (!ancoraInLista(streamer)) continue;
+
       const channel = await resolveChannel();
       if (!channel) continue;
 
@@ -690,6 +692,8 @@ function startLiveMonitor(client, options = {}) {
       const isLive = Boolean(info?.live);
       const action = transitionAction(previous, key, isLive, meta);
       if (action !== 'notify') continue;
+
+      if (!ancoraInLista(streamer)) continue;
 
       const channel = await resolveChannel();
       if (!channel) continue;
@@ -746,6 +750,8 @@ function startLiveMonitor(client, options = {}) {
         continue;
       }
 
+      if (!ancoraInLista(streamer)) continue;
+
       const channel = await resolveChannel();
       if (!channel) continue;
 
@@ -785,6 +791,15 @@ function startLiveMonitor(client, options = {}) {
     for (const key of meta.seeded) {
       if (!keys.has(key)) meta.seeded.delete(key);
     }
+  }
+
+  // Un giro di controllo puo' restare appeso su una richiesta di rete o su
+  // Discord per secondi: nel frattempo /live rimuovi puo' aver tolto l'account,
+  // e annunciarlo dopo una rimozione confermata sarebbe un messaggio che
+  // nessuno ha piu' chiesto. Rileggiamo la lista appena prima di inviare.
+  function ancoraInLista(streamer) {
+    const key = streamerKey(streamer);
+    return readStreamers().some(altro => streamerKey(altro) === key);
   }
 
   async function tick() {

@@ -86,10 +86,22 @@ module.exports = {
       return;
     }
 
-    if (!(await isGuildDelleLive(interaction))) {
+    const stato = await statoGuildDelleLive(interaction);
+
+    if (stato === 'altro-server') {
       await replyEphemeral(
         interaction,
         '❌ Le notifiche live sono configurate su un altro server: la lista si gestisce da lì.',
+      );
+      return;
+    }
+
+    if (stato === 'non-verificabile') {
+      await replyEphemeral(
+        interaction,
+        '❌ Non riesco a risalire al server del canale delle notifiche (`LIVE_CHANNEL_ID`): ' +
+          'controlla che l\'id sia giusto e che il bot veda quel canale. ' +
+          'Finche\' non e\' verificabile la lista non si tocca.',
       );
       return;
     }
@@ -116,8 +128,9 @@ module.exports = {
    */
   async autocomplete(interaction) {
     const focused = interaction.options.getFocused();
-    const inLista = interaction.inGuild() && (await isGuildDelleLive(interaction));
-    const choices = (inLista ? matchStreamers(listStreamers(), focused) : [])
+    const consentito =
+      interaction.inGuild() && (await statoGuildDelleLive(interaction)) === 'ok';
+    const choices = (consentito ? matchStreamers(listStreamers(), focused) : [])
       .slice(0, MAX_AUTOCOMPLETE_CHOICES)
       .map(streamer => ({
         name: `${platformLabel(streamer.platform)}: ${streamer.displayName || streamer.id}`.slice(0, 100),
@@ -147,20 +160,23 @@ function replyEphemeral(interaction, content) {
  * permesso Administrator vale nel server da cui arriva l'interazione: senza
  * questo controllo l'amministratore di un altro server dove sta il bot
  * potrebbe cambiare gli account annunciati qui.
- * Con LIVE_CHANNEL_ID vuoto (notifiche spente) o con un canale irraggiungibile
- * non c'e' un server da proteggere e il comando resta usabile.
+ * Con LIVE_CHANNEL_ID vuoto le notifiche sono spente e non c'e' niente da
+ * proteggere; se invece il canale e' configurato ma non si riesce a risalire al
+ * suo server si chiude (fail closed): un errore temporaneo di Discord non deve
+ * diventare la finestra in cui un altro server riscrive la lista.
  * @param {import('discord.js').BaseInteraction} interaction
+ * @returns {Promise<'ok' | 'altro-server' | 'non-verificabile'>}
  */
-async function isGuildDelleLive(interaction) {
+async function statoGuildDelleLive(interaction) {
   const channelId = optionalEnv('LIVE_CHANNEL_ID');
-  if (!channelId) return true;
+  if (!channelId) return 'ok';
 
   const cached = interaction.client.channels.cache.get(channelId);
   const channel =
     cached ?? (await interaction.client.channels.fetch(channelId).catch(() => null));
-  if (!channel?.guildId) return true;
+  if (!channel?.guildId) return 'non-verificabile';
 
-  return channel.guildId === interaction.guildId;
+  return channel.guildId === interaction.guildId ? 'ok' : 'altro-server';
 }
 
 function formatStreamer(streamer) {
