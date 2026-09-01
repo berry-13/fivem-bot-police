@@ -999,7 +999,9 @@ test('forget annulla anche un annuncio già deciso da un giro in corso', async (
     },
   };
 
-  let monitor;
+  // Il fake del canale deve poter chiamare il monitor, che nasce dopo: lo
+  // teniamo in un contenitore invece di una variabile riassegnata.
+  const attivo = { monitor: null };
   let rimuoviERiaggiungi = false;
   const client = {
     channels: {
@@ -1009,9 +1011,9 @@ test('forget annulla anche un annuncio già deciso da un giro in corso', async (
           // L'admin cambia il nome mostrato: rimozione + riaggiunta della stessa
           // chiave mentre il giro e' appeso qui. La lista torna identica, quindi
           // il solo controllo "e' ancora in lista" non basta.
-          monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
+          attivo.monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
           scrivi([{ platform: 'kick', id: 'salvinosalvo', displayName: 'Salvino' }]);
-          monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
+          attivo.monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
         }
         return channel;
       },
@@ -1030,7 +1032,7 @@ test('forget annulla anche un annuncio già deciso da un giro in corso', async (
 
   scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
 
-  monitor = startLiveMonitor(client, {
+  const monitor = startLiveMonitor(client, {
     channelId: 'chan-1',
     storePath,
     pollIntervalMs: 15_000,
@@ -1039,6 +1041,7 @@ test('forget annulla anche un annuncio già deciso da un giro in corso', async (
     setIntervalFn: () => ({ unref() {} }),
     clearIntervalFn: () => {},
   });
+  attivo.monitor = monitor;
 
   try {
     await monitor._tick(); // seed offline
