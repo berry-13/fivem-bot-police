@@ -384,3 +384,20 @@ test('/live non tocca la lista se Discord non riconosce l\'interazione', async (
   assert.deepEqual(interaction.risposte, []);
   assert.deepEqual(listaSuDisco(), ['twitch:salvinosalvo']);
 });
+
+test('/live rimuovi non riversa un valore lunghissimo nella risposta', async () => {
+  saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath);
+
+  // Il tetto vero e' setMaxLength lato Discord; qui verifichiamo che anche un
+  // valore fuori misura non produca un messaggio oltre i 2000 caratteri.
+  const interaction = fakeInteraction('rimuovi', { account: 'x'.repeat(1900) });
+
+  await live.execute(interaction);
+
+  assert.ok(
+    interaction.risposte[0].content.length < 500,
+    `risposta troppo lunga: ${interaction.risposte[0].content.length} caratteri`,
+  );
+  assert.match(interaction.risposte[0].content, /…/);
+  assert.deepEqual(listaSuDisco(), ['twitch:salvinosalvo']);
+});

@@ -347,3 +347,17 @@ test('parseAccountInput rifiuta le pagine del sito che sembrano nomi', () => {
   assert.equal(parseAccountInput('https://www.twitch.tv/salvinosalvo/videos').id, 'salvinosalvo');
   assert.equal(parseAccountInput('https://kick.com/salvinosalvo/clips').id, 'salvinosalvo');
 });
+
+test('resolveStreamers rifiuta un prefisso che contraddice il link', () => {
+  const streamers = [
+    { platform: 'twitch', id: 'foo_bar' },
+    { platform: 'kick', id: 'foo_bar' },
+  ];
+
+  // Il prefisso dice Twitch, il link dice Kick: rimuovere "quello del prefisso"
+  // vorrebbe dire togliere un account che l'utente non ha indicato.
+  assert.deepEqual(resolveStreamers(streamers, 'twitch:https://kick.com/foo_bar'), []);
+
+  // Prefisso e link d'accordo: risolve.
+  assert.deepEqual(resolveStreamers(streamers, 'kick:https://kick.com/foo_bar'), [streamers[1]]);
+});

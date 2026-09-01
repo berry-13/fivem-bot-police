@@ -8,6 +8,7 @@ const {
   InteractionContextType,
 } = require('discord.js');
 const {
+  MAX_DISPLAY_NAME,
   MAX_STREAMERS,
   PLATFORMS,
   addStreamer,
@@ -30,6 +31,10 @@ const PLATFORM_CHOICES = Object.entries(PLATFORMS).map(([value, meta]) => ({
 // Limiti di Discord: 25 scelte per autocomplete, 1024 caratteri per campo embed.
 const MAX_AUTOCOMPLETE_CHOICES = 25;
 const MAX_FIELD_CHARS = 1024;
+
+// Lunghezza massima accettata per il campo "account": un link di canale ci sta
+// dentro con abbondanza, e i messaggi di errore che lo ripetono restano corti.
+const MAX_ACCOUNT_INPUT = 120;
 
 const COLOR_LISTA = 0x5865f2;
 
@@ -56,12 +61,17 @@ module.exports = {
           option
             .setName('account')
             .setDescription('Username o link del canale')
-            .setRequired(true),
+            .setRequired(true)
+            // Un link di canale sta largamente dentro: il tetto evita che un
+            // valore lunghissimo finisca dentro un messaggio di errore e sfondi
+            // il limite dei 2000 caratteri di Discord.
+            .setMaxLength(MAX_ACCOUNT_INPUT),
         )
         .addStringOption(option =>
           option
             .setName('nome')
-            .setDescription('Nome da mostrare nella notifica (default: lo username)'),
+            .setDescription('Nome da mostrare nella notifica (default: lo username)')
+            .setMaxLength(MAX_DISPLAY_NAME),
         ),
     )
     .addSubcommand(sub =>
@@ -73,6 +83,7 @@ module.exports = {
             .setName('account')
             .setDescription('Scegli dalla lista, o scrivi piattaforma:username')
             .setRequired(true)
+            .setMaxLength(MAX_ACCOUNT_INPUT)
             .setAutocomplete(true),
         ),
     )
@@ -176,6 +187,17 @@ function replyEphemeral(interaction, payload) {
 }
 
 /**
+ * Il valore scritto dall'utente rientra nei messaggi di errore: setMaxLength lo
+ * tiene corto lato Discord, questo lo tiene corto anche se un client non
+ * rispetta il limite.
+ * @param {string} valore
+ */
+function accorcia(valore) {
+  const testo = String(valore ?? '');
+  return testo.length > 80 ? `${testo.slice(0, 80)}…` : testo;
+}
+
+/**
  * La lista e il canale delle notifiche sono globali al processo, mentre il
  * permesso Administrator vale nel server da cui arriva l'interazione: senza
  * questo controllo l'amministratore di un altro server dove sta il bot
@@ -271,7 +293,7 @@ async function handleRemove(interaction) {
   if (matches.length === 0) {
     await replyEphemeral(
       interaction,
-      `❌ Nessun account in lista corrisponde esattamente a "${query}". ` +
+      `❌ Nessun account in lista corrisponde esattamente a "${accorcia(query)}". ` +
         'Scegli una voce dai suggerimenti, oppure scrivi lo username esatto, ' +
         'il link del canale o `piattaforma:username`. La lista e\' in `/live lista`.',
     );
@@ -284,7 +306,7 @@ async function handleRemove(interaction) {
     const elenco = matches.map(streamer => `\`${streamerKey(streamer)}\``).join(', ');
     await replyEphemeral(
       interaction,
-      `❌ "${query}" corrisponde a ${matches.length} account: ${elenco}.\n` +
+      `❌ "${accorcia(query)}" corrisponde a ${matches.length} account: ${elenco}.\n` +
         'Riprova indicando anche la piattaforma (o scegli una voce dai suggerimenti).',
     );
     return;

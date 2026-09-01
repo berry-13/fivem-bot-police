@@ -45,7 +45,7 @@ npm start
 | `GUILD_ID` | no | Se valorizzato, registra i comandi solo in quel server, con effetto immediato. Se vuoto la registrazione e' globale e puo' richiedere fino a un'ora. |
 | `COMMAND_PREFIX` | no | Prefisso dei comandi testuali, default `!`. |
 | `LIVE_CHANNEL_ID` | per le notifiche live | Id del canale Discord dove mandare "X e' in live". |
-| `LIVE_ROLE_ID` | no | Chi pingare in ogni notifica live: id di un ruolo, oppure `everyone` (o l'id del server) per `@everyone`. Vuoto = nessun ping. |
+| `LIVE_ROLE_ID` | no | Chi pingare in ogni notifica live. **Vuoto = `@everyone`** (default). Metti l'id di un ruolo per pingare solo quello, oppure `none` per non pingare nessuno. |
 | `TWITCH_CLIENT_ID` | per Twitch | Client ID di un'app su [dev.twitch.tv](https://dev.twitch.tv/console). |
 | `TWITCH_CLIENT_SECRET` | per Twitch | Client Secret della stessa app. |
 | `LIVE_POLL_INTERVAL_MS` | no | Intervallo di controllo (default `60000`, minimo `15000`). |
@@ -148,9 +148,11 @@ Setup minimo:
    (tipo "Application integration" va bene) e metti Client ID e Secret in
    `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`.
 3. TikTok non richiede credenziali: il bot interroga gli endpoint pubblici.
-4. Opzionale: `LIVE_ROLE_ID` per pingare a ogni annuncio. Usa l'id di un ruolo,
-   oppure `everyone` (o l'id del server) per `@everyone`. Il bot deve avere il
-   permesso "Menziona @everyone, @here e tutti i ruoli" se usi `@everyone`.
+4. Ogni annuncio pinga **`@everyone`**: e' il default, non serve configurare
+   niente. Il bot deve avere il permesso "Menziona @everyone, @here e tutti i
+   ruoli" nel canale, altrimenti Discord rifiuta il messaggio (errore nei log).
+   Per pingare solo un ruolo metti il suo id in `LIVE_ROLE_ID`; per non pingare
+   nessuno metti `LIVE_ROLE_ID=none`.
 
 Comportamento:
 
@@ -161,6 +163,8 @@ Comportamento:
   fotografare lo stato.
 - Notifica solo sul passaggio **offline -> live**. Finche' resta in live non
   ripete il messaggio.
+- Ogni notifica pinga `@everyone` (default), con `allowedMentions` espliciti: il
+  ping arriva davvero, non resta solo scritto nel messaggio.
 - Errori di rete o API vengono loggati e ritentati al giro successivo; il
   processo non cade. Una richiesta fallita non vale come "offline", cosi' quando
   la rete torna non parte un secondo annuncio della stessa live.

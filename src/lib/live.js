@@ -24,6 +24,13 @@ const COLOR_KICK = 0x53fc18;
 // (TikTok e Kick). Twitch chiede tutti i login in una sola chiamata.
 const PROVIDER_CONCURRENCY = 4;
 
+// Chi pingare quando manca LIVE_ROLE_ID: una live che nessuno vede non serve a
+// niente, quindi per default si avvisa tutto il server.
+const DEFAULT_LIVE_MENTION = 'everyone';
+
+// Come spegnere il ping a mano, ora che il default e' pingare.
+const NO_MENTION_KEYWORDS = new Set(['none', 'nessuno', 'no', 'off', '-']);
+
 /**
  * Token app Twitch (client credentials) con cache in memoria.
  * @param {{ clientId: string, clientSecret: string, fetchImpl?: typeof fetch }} opts
@@ -387,8 +394,10 @@ async function fetchKickLive(username, { fetchImpl = fetch, timeoutMs = 10_000 }
 
 /**
  * Interpreta LIVE_ROLE_ID (o roleId passato a mano).
- * - vuoto / assente: nessun ping
+ * - vuoto / assente: nessun ping (il default di chi avvia il monitor e'
+ *   @everyone, vedi DEFAULT_LIVE_MENTION)
  * - "everyone" / "@everyone": ping @everyone
+ * - "none" / "nessuno" / "no" / "off" / "-": nessun ping, scelto a mano
  * - snowflake uguale all'id del server: ping @everyone (l'id del ruolo @everyone
  *   coincide col guild id, ma Discord non pinga se mandi solo <@&guildId>)
  * - altro snowflake: ping di quel ruolo
@@ -404,6 +413,11 @@ function resolveLiveMention(roleId, guildId) {
   const normalized = raw.toLowerCase();
   if (normalized === 'everyone' || normalized === '@everyone') {
     return { kind: 'everyone' };
+  }
+
+  // Serve un modo esplicito per spegnere il ping, ora che il default e' pingare.
+  if (NO_MENTION_KEYWORDS.has(normalized)) {
+    return { kind: 'none' };
   }
 
   // Il ruolo @everyone ha lo stesso id del server: va trattato come everyone,
@@ -553,7 +567,9 @@ function startLiveMonitor(client, options = {}) {
     ? () => options.streamers
     : () => listStreamers(options.storePath);
   const channelId = options.channelId ?? optionalEnv('LIVE_CHANNEL_ID');
-  const roleId = options.roleId ?? optionalEnv('LIVE_ROLE_ID');
+  // Nessun LIVE_ROLE_ID = @everyone. Per non pingare serve dirlo:
+  // LIVE_ROLE_ID=none (vedi resolveLiveMention).
+  const roleId = options.roleId ?? optionalEnv('LIVE_ROLE_ID') ?? DEFAULT_LIVE_MENTION;
   const pollIntervalMs = Math.max(
     15_000,
     Number(options.pollIntervalMs ?? optionalEnv('LIVE_POLL_INTERVAL_MS') ?? liveConfig.defaultPollIntervalMs) ||
@@ -613,7 +629,6 @@ function startLiveMonitor(client, options = {}) {
   // lista piena di richieste in timeout terrebbe occupato il monitor per
   // minuti, e i giri successivi verrebbero scartati dal guard "ticking".
   const budgetGiroMs = Math.max(10_000, Math.round(pollIntervalMs * 0.8));
-  let scadenzaGiro = Infinity;
   let ticking = false;
   let stopped = false;
 
@@ -636,6 +651,15 @@ function startLiveMonitor(client, options = {}) {
     if (!auth) return;
 
     const logins = twitchStreamers.map(s => s.id);
+    // Generazioni fotografate prima della chiamata: Twitch chiede tutti i login
+    // in una volta, e se /live tocca una voce mentre la richiesta e' in volo la
+    // risposta vecchia non deve valere per il nuovo ingresso.
+    const generazioniIniziali = new Map(
+      twitchStreamers.map(streamer => {
+        const key = streamerKey(streamer);
+        return [key, generazione(key)];
+      }),
+    );
     let liveMap;
     try {
       liveMap = await fetchTwitchLive(logins, {
@@ -657,11 +681,15 @@ function startLiveMonitor(client, options = {}) {
 
     for (const streamer of twitchStreamers) {
       const key = streamerKey(streamer);
-      // Generazione all'inizio del lavoro su questa voce: se /live la azzera
-      // mentre siamo appesi su una richiesta, l'annuncio non parte piu'.
-      const gen = generazione(key);
+      const gen = generazioniIniziali.get(key);
       const login = streamer.id.toLowerCase();
       const info = liveMap.get(login);
+      // Voce toccata da /live mentre la richiesta era in volo: questa risposta
+      // non descrive piu' l'account che c'e' ora, quindi non aggiorna lo stato
+      // (altrimenti il nuovo ingresso nascerebbe con un "offline" vecchio e si
+      // beccherebbe un annuncio al giro dopo).
+      if (gen !== generazione(key)) continue;
+
       const isLive = Boolean(info);
       const action = transitionAction(previous, key, isLive, meta);
 
@@ -707,8 +735,8 @@ function startLiveMonitor(client, options = {}) {
     }
   }
 
-  async function checkTikTok(tiktokStreamers) {
-    await inParallelo('TikTok', tiktokStreamers, async streamer => {
+  async function checkTikTok(tiktokStreamers, scadenza) {
+    await inParallelo('TikTok', tiktokStreamers, scadenza, async streamer => {
       const key = streamerKey(streamer);
       const gen = generazione(key);
       let info;
@@ -718,6 +746,8 @@ function startLiveMonitor(client, options = {}) {
         console.warn(`Live monitor TikTok ${streamer.id}: ${error.message}`);
         return;
       }
+
+      if (gen !== generazione(key)) return;
 
       const isLive = Boolean(info?.live);
       const action = transitionAction(previous, key, isLive, meta);
@@ -749,8 +779,8 @@ function startLiveMonitor(client, options = {}) {
     });
   }
 
-  async function checkKick(kickStreamers) {
-    await inParallelo('Kick', kickStreamers, async streamer => {
+  async function checkKick(kickStreamers, scadenza) {
+    await inParallelo('Kick', kickStreamers, scadenza, async streamer => {
       const key = streamerKey(streamer);
       const gen = generazione(key);
       let info;
@@ -760,6 +790,8 @@ function startLiveMonitor(client, options = {}) {
         console.warn(`Live monitor Kick ${streamer.id}: ${error.message}`);
         return;
       }
+
+      if (gen !== generazione(key)) return;
 
       const isLive = Boolean(info?.live);
 
@@ -814,7 +846,7 @@ function startLiveMonitor(client, options = {}) {
   // insieme: quante richieste in volo, e quanto puo' durare il giro. Chi resta
   // fuori dal budget non viene perso: il giro dopo riparte da lui grazie al
   // cursore, cosi' nessun account resta indietro per sempre.
-  async function inParallelo(nome, streamers, worker) {
+  async function inParallelo(nome, streamers, scadenza, worker) {
     if (streamers.length === 0) return;
 
     const partenza = (cursori.get(nome) ?? 0) % streamers.length;
@@ -825,7 +857,7 @@ function startLiveMonitor(client, options = {}) {
     await Promise.all(
       Array.from({ length: corsie }, async () => {
         while (!stopped) {
-          if (Date.now() >= scadenzaGiro) return;
+          if (Date.now() >= scadenza) return;
 
           const streamer = coda.shift();
           if (!streamer) return;
@@ -895,14 +927,23 @@ function startLiveMonitor(client, options = {}) {
   async function tick() {
     if (stopped || ticking) return;
     ticking = true;
-    scadenzaGiro = Date.now() + budgetGiroMs;
     try {
       const streamers = readStreamers();
       pruneState(streamers);
 
+      const tiktokStreamers = streamers.filter(s => s.platform === 'tiktok');
+      const kickStreamers = streamers.filter(s => s.platform === 'kick');
+
+      // Budget diviso tra i provider che hanno lavoro, ognuno col suo
+      // cronometro: con un solo budget condiviso e un ordine fisso, un TikTok
+      // lento si mangiava tutto il tempo e Kick non veniva mai interrogato.
+      // Twitch resta fuori dal conto: e' una sola chiamata per tutti i login.
+      const conLavoro = Math.max(1, [tiktokStreamers, kickStreamers].filter(l => l.length > 0).length);
+      const quotaMs = Math.round(budgetGiroMs / conLavoro);
+
       await checkTwitch(streamers.filter(s => s.platform === 'twitch'));
-      await checkTikTok(streamers.filter(s => s.platform === 'tiktok'));
-      await checkKick(streamers.filter(s => s.platform === 'kick'));
+      await checkTikTok(tiktokStreamers, Date.now() + quotaMs);
+      await checkKick(kickStreamers, Date.now() + quotaMs);
     } catch (error) {
       console.warn(`Live monitor: errore imprevisto: ${error.message}`);
     } finally {

@@ -398,8 +398,10 @@ function resolveStreamers(streamers, query) {
     // Attenzione: in "https://..." i due punti non separano la piattaforma,
     // quindi si prosegue solo se il pezzo davanti e' una piattaforma vera.
     if (platform) {
-      const { id } = parseAccountInput(raw.slice(separator + 1));
-      if (!id) return [];
+      const { id, platform: dalLink } = parseAccountInput(raw.slice(separator + 1));
+      // "twitch:https://kick.com/foo" dice due cose diverse: meglio non
+      // rimuovere niente che rimuovere l'account della piattaforma sbagliata.
+      if (!id || (dalLink && dalLink !== platform)) return [];
       return streamers.filter(streamer => streamerKey(streamer) === `${platform}:${id}`);
     }
   }

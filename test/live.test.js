@@ -1057,3 +1057,240 @@ test('forget annulla anche un annuncio già deciso da un giro in corso', async (
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('resolveLiveMention: si spegne il ping solo dicendolo', () => {
+  assert.deepEqual(resolveLiveMention('none'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('NESSUNO'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('off'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('-'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('everyone'), { kind: 'everyone' });
+  assert.deepEqual(resolveLiveMention('123456'), { kind: 'role', roleId: '123456' });
+});
+
+test('startLiveMonitor pinga @everyone senza LIVE_ROLE_ID', async () => {
+  const originale = process.env.LIVE_ROLE_ID;
+  delete process.env.LIVE_ROLE_ID;
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    guild: { id: 'guild-1' },
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 2 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline
+    kickLive = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 1);
+    assert.equal(inviati[0].content, '@everyone');
+    assert.deepEqual(inviati[0].allowedMentions, { parse: ['everyone'] });
+  } finally {
+    monitor.stop();
+    if (originale === undefined) {
+      delete process.env.LIVE_ROLE_ID;
+    } else {
+      process.env.LIVE_ROLE_ID = originale;
+    }
+  }
+});
+
+test('startLiveMonitor non pinga se LIVE_ROLE_ID dice di non pingare', async () => {
+  const originale = process.env.LIVE_ROLE_ID;
+  process.env.LIVE_ROLE_ID = 'none';
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 2 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+    kickLive = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 1);
+    assert.equal(inviati[0].content, undefined);
+    assert.deepEqual(inviati[0].allowedMentions, { parse: [] });
+  } finally {
+    monitor.stop();
+    if (originale === undefined) {
+      delete process.env.LIVE_ROLE_ID;
+    } else {
+      process.env.LIVE_ROLE_ID = originale;
+    }
+  }
+});
+
+test('startLiveMonitor non fa morire di fame Kick quando TikTok e\' lento', async () => {
+  const channel = { isTextBased: () => true, send: async () => {} };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  const interrogati = { tiktok: 0, kick: 0 };
+  let adesso = Date.now();
+  const originalNow = Date.now;
+  Date.now = () => adesso;
+
+  // Ogni richiesta TikTok "costa" 8s di orologio: con un budget condiviso
+  // (12s per un intervallo di 15s) Kick non partirebbe mai.
+  const fetchImpl = async url => {
+    const u = String(url);
+    if (u.includes('tiktok')) {
+      interrogati.tiktok += 1;
+      adesso += 8_000;
+      return { ok: true, async json() { return { data: { liveRoom: { status: 4 } } }; } };
+    }
+    interrogati.kick += 1;
+    return { ok: true, async json() { return { livestream: null }; } };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [
+      { platform: 'tiktok', id: 'tik_uno' },
+      { platform: 'tiktok', id: 'tik_due' },
+      { platform: 'tiktok', id: 'tik_tre' },
+      { platform: 'kick', id: 'kick-uno' },
+      { platform: 'kick', id: 'kick-due' },
+    ],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+
+    assert.ok(interrogati.tiktok > 0, 'TikTok deve essere stato interrogato');
+    assert.equal(interrogati.kick, 2, 'Kick deve avere il suo budget, non gli avanzi di TikTok');
+  } finally {
+    Date.now = originalNow;
+    monitor.stop();
+  }
+});
+
+test('startLiveMonitor scarta la risposta Twitch se la voce cambia durante la chiamata', async () => {
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  const attivo = { monitor: null };
+  let cambiaDurante = false;
+
+  // Twitch chiede tutti i login in una sola volta: se /live rimuove e riaggiunge
+  // la voce mentre quella richiesta e' in volo, la risposta vecchia non descrive
+  // piu' l'account che c'e' ora.
+  const fetchImpl = async url => {
+    const u = String(url);
+
+    if (u.includes('oauth2/token')) {
+      return { ok: true, async json() { return { access_token: 't', expires_in: 3600 }; } };
+    }
+
+    if (u.includes('helix/streams')) {
+      if (cambiaDurante) {
+        attivo.monitor.forget({ platform: 'twitch', id: 'salvinosalvo' });
+        attivo.monitor.forget({ platform: 'twitch', id: 'salvinosalvo' });
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: [{ user_login: 'salvinosalvo', user_name: 'SalvinoSalvo', title: 'Live' }],
+          };
+        },
+      };
+    }
+
+    return { ok: true, status: 200, async json() { return { data: [] }; } };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'twitch', id: 'salvinosalvo' }],
+    twitchClientId: 'cid',
+    twitchClientSecret: 'sec',
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+  attivo.monitor = monitor;
+
+  try {
+    cambiaDurante = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 0);
+    // La risposta vecchia non deve nemmeno essere entrata nello stato: la voce
+    // riaggiunta riparte pulita al giro successivo.
+    assert.equal(monitor._meta.seeded.has('twitch:salvinosalvo'), false);
+  } finally {
+    monitor.stop();
+  }
+});
