@@ -41,6 +41,22 @@ module.exports = {
       return;
     }
 
+    // Le autocomplete arrivano come interazioni a parte: rispondere con
+    // interaction.respond e' l'unico modo, un reply normale qui fallisce.
+    if (interaction.isAutocomplete()) {
+      const command = client.slashCommands.get(interaction.commandName);
+      if (typeof command?.autocomplete !== 'function') return;
+
+      try {
+        await command.autocomplete(interaction, client);
+      } catch (error) {
+        // Niente da rispondere all'utente: la finestra dei suggerimenti si
+        // chiude da sola e il comando resta usabile scrivendo il valore a mano.
+        console.error(`Errore nell'autocomplete di "${interaction.commandName}":`, error);
+      }
+      return;
+    }
+
     if (interaction.isStringSelectMenu() && PANNELLI[interaction.customId]) {
       const pannello = PANNELLI[interaction.customId];
       await runTicketHandler(interaction, (i) => handleTicketOpen(i, pannello), "l'apertura");

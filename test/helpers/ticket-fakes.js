@@ -116,6 +116,7 @@ function fakeSelectInteraction({ value = CATEGORIA.value, guild, customId = 'tic
   return {
     stato,
     isChatInputCommand: () => false,
+    isAutocomplete: () => false,
     isStringSelectMenu: () => true,
     isButton: () => false,
     customId,
@@ -132,6 +133,7 @@ function fakeCloseInteraction({ guild, channel }) {
   return {
     stato,
     isChatInputCommand: () => false,
+    isAutocomplete: () => false,
     isStringSelectMenu: () => false,
     isButton: () => true,
     customId: 'ticket-close',
