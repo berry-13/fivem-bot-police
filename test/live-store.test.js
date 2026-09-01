@@ -321,3 +321,29 @@ test('addStreamer rifiuta un link che non e\' un profilo', () => {
   assert.equal(result.reason, 'id');
   assert.deepEqual(readFile().streamers, []);
 });
+
+test('parseAccountInput rifiuta le pagine del sito che sembrano nomi', () => {
+  // "login" e "auth" passerebbero come username validi.
+  assert.deepEqual(parseAccountInput('https://www.twitch.tv/login'), {
+    id: '',
+    platform: 'twitch',
+  });
+  assert.deepEqual(parseAccountInput('https://kick.com/auth/login'), {
+    id: '',
+    platform: 'kick',
+  });
+  assert.deepEqual(parseAccountInput('https://www.twitch.tv/settings/profile'), {
+    id: '',
+    platform: 'twitch',
+  });
+  // Path piu' profondo del canale: non e' un profilo.
+  assert.deepEqual(parseAccountInput('https://kick.com/salvinosalvo/videos/123'), {
+    id: '',
+    platform: 'kick',
+  });
+
+  // Il canale e le sue sottopagine restano validi.
+  assert.equal(parseAccountInput('https://www.twitch.tv/salvinosalvo').id, 'salvinosalvo');
+  assert.equal(parseAccountInput('https://www.twitch.tv/salvinosalvo/videos').id, 'salvinosalvo');
+  assert.equal(parseAccountInput('https://kick.com/salvinosalvo/clips').id, 'salvinosalvo');
+});

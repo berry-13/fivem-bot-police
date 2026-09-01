@@ -246,6 +246,8 @@ async function fetchTikTokLive(username, { fetchImpl = fetch, timeoutMs = 10_000
     Referer: `https://www.tiktok.com/@${clean}`,
   };
 
+  let erroreRoom = null;
+
   // 1) Endpoint room (piu' stabile delle pagine HTML).
   try {
     const roomUrl =
@@ -261,8 +263,10 @@ async function fetchTikTokLive(username, { fetchImpl = fetch, timeoutMs = 10_000
         return { live: false };
       }
     }
-  } catch {
-    // prosegui col fallback HTML
+  } catch (error) {
+    // Prosegui col fallback HTML, ma ricorda il motivo: se cade anche quello
+    // lo stato e' sconosciuto, non offline.
+    erroreRoom = error;
   }
 
   // 2) Fallback: pagina /live e segnali grezzi nel markup.
@@ -278,7 +282,10 @@ async function fetchTikTokLive(username, { fetchImpl = fetch, timeoutMs = 10_000
     });
 
     if (!response.ok) {
-      return { live: false };
+      // HTTP fallito non vuol dire offline: un 5xx o un rate limit letto come
+      // "offline" farebbe scattare un finto passaggio offline -> live appena la
+      // rete torna, cioe' un doppio annuncio della stessa live.
+      throw new Error(`TikTok live page HTTP ${response.status}`);
     }
 
     const html = await response.text();
@@ -300,8 +307,11 @@ async function fetchTikTokLive(username, { fetchImpl = fetch, timeoutMs = 10_000
       roomId: null,
       url: pageUrl,
     };
-  } catch {
-    return { live: false };
+  } catch (error) {
+    // Nessuna delle due strade ha risposto: lo stato resta sconosciuto e il
+    // chiamante non aggiorna niente (come fa il percorso Kick).
+    const motivo = erroreRoom ? `${erroreRoom.message}; ${error.message}` : error.message;
+    throw new Error(`TikTok non raggiungibile per ${clean}: ${motivo}`, { cause: error });
   }
 }
 
@@ -594,6 +604,16 @@ function startLiveMonitor(client, options = {}) {
   /** @type {Map<string, boolean>} */
   const previous = new Map();
   const meta = { seeded: new Set() };
+  // chiave -> quante volte quella voce e' stata azzerata da /live: serve a
+  // scartare gli annunci decisi da un giro partito prima della modifica.
+  const generazioni = new Map();
+  // Provider -> da quale account ripartire, quando un giro non li finisce tutti.
+  const cursori = new Map();
+  // Quanto puo' durare un giro prima di rimandare il resto: senza un tetto una
+  // lista piena di richieste in timeout terrebbe occupato il monitor per
+  // minuti, e i giri successivi verrebbero scartati dal guard "ticking".
+  const budgetGiroMs = Math.max(10_000, Math.round(pollIntervalMs * 0.8));
+  let scadenzaGiro = Infinity;
   let ticking = false;
   let stopped = false;
 
@@ -637,6 +657,9 @@ function startLiveMonitor(client, options = {}) {
 
     for (const streamer of twitchStreamers) {
       const key = streamerKey(streamer);
+      // Generazione all'inizio del lavoro su questa voce: se /live la azzera
+      // mentre siamo appesi su una richiesta, l'annuncio non parte piu'.
+      const gen = generazione(key);
       const login = streamer.id.toLowerCase();
       const info = liveMap.get(login);
       const isLive = Boolean(info);
@@ -673,7 +696,7 @@ function startLiveMonitor(client, options = {}) {
 
       // Ultimo controllo attaccato all'invio: resolveChannel puo' aver aspettato
       // una fetch, e nel frattempo /live rimuovi puo' essere passato.
-      if (!ancoraInLista(streamer)) continue;
+      if (!ancoraDaAnnunciare(streamer, gen)) continue;
 
       try {
         await channel.send(payload);
@@ -685,8 +708,9 @@ function startLiveMonitor(client, options = {}) {
   }
 
   async function checkTikTok(tiktokStreamers) {
-    await inParallelo(tiktokStreamers, async streamer => {
+    await inParallelo('TikTok', tiktokStreamers, async streamer => {
       const key = streamerKey(streamer);
+      const gen = generazione(key);
       let info;
       try {
         info = await fetchTikTokLive(streamer.id, { fetchImpl });
@@ -714,7 +738,7 @@ function startLiveMonitor(client, options = {}) {
         guildId: channel.guild?.id,
       });
 
-      if (!ancoraInLista(streamer)) return;
+      if (!ancoraDaAnnunciare(streamer, gen)) return;
 
       try {
         await channel.send(payload);
@@ -726,8 +750,9 @@ function startLiveMonitor(client, options = {}) {
   }
 
   async function checkKick(kickStreamers) {
-    await inParallelo(kickStreamers, async streamer => {
+    await inParallelo('Kick', kickStreamers, async streamer => {
       const key = streamerKey(streamer);
+      const gen = generazione(key);
       let info;
       try {
         info = await fetchKickLive(streamer.id, { fetchImpl });
@@ -771,7 +796,7 @@ function startLiveMonitor(client, options = {}) {
         guildId: channel.guild?.id,
       });
 
-      if (!ancoraInLista(streamer)) return;
+      if (!ancoraDaAnnunciare(streamer, gen)) return;
 
       try {
         await channel.send(payload);
@@ -785,26 +810,44 @@ function startLiveMonitor(client, options = {}) {
 
   // TikTok e Kick vanno interrogati un account alla volta: in fila indiana una
   // lista piena di richieste lente terrebbe occupato un giro per minuti, e i
-  // giri successivi finirebbero scartati dal guard "ticking". Un tetto di
-  // richieste in volo tiene il giro dentro tempi sensati senza martellare gli
-  // endpoint pubblici.
-  async function inParallelo(streamers, worker) {
-    const coda = [...streamers];
+  // giri successivi finirebbero scartati dal guard "ticking". Due limiti
+  // insieme: quante richieste in volo, e quanto puo' durare il giro. Chi resta
+  // fuori dal budget non viene perso: il giro dopo riparte da lui grazie al
+  // cursore, cosi' nessun account resta indietro per sempre.
+  async function inParallelo(nome, streamers, worker) {
+    if (streamers.length === 0) return;
+
+    const partenza = (cursori.get(nome) ?? 0) % streamers.length;
+    const coda = [...streamers.slice(partenza), ...streamers.slice(0, partenza)];
     const corsie = Math.min(PROVIDER_CONCURRENCY, coda.length);
+    let fatti = 0;
 
     await Promise.all(
       Array.from({ length: corsie }, async () => {
         while (!stopped) {
+          if (Date.now() >= scadenzaGiro) return;
+
           const streamer = coda.shift();
           if (!streamer) return;
+
           await worker(streamer);
+          fatti += 1;
         }
       }),
     );
+
+    cursori.set(nome, (partenza + fatti) % streamers.length);
+
+    if (fatti < streamers.length) {
+      console.warn(
+        `Live monitor ${nome}: budget del giro esaurito dopo ${fatti}/${streamers.length} account, ` +
+          'i restanti passano al giro successivo.',
+      );
+    }
   }
 
   // Uno streamer rimosso dalla lista non deve lasciare il suo stato dietro:
-  // altrimenti la mappa cresce a ogni modifica e un account ri-aggiunto
+  // altrimenti le mappe crescono a ogni modifica e un account ri-aggiunto
   // ripartirebbe da uno stato vecchio di ore.
   function pruneState(streamers) {
     const keys = new Set(streamers.map(streamerKey));
@@ -815,31 +858,44 @@ function startLiveMonitor(client, options = {}) {
     for (const key of meta.seeded) {
       if (!keys.has(key)) meta.seeded.delete(key);
     }
+    for (const key of generazioni.keys()) {
+      if (!keys.has(key)) generazioni.delete(key);
+    }
+  }
+
+  function generazione(key) {
+    return generazioni.get(key) ?? 0;
   }
 
   // Rimozione e riaggiunta tra due giri (tipico: cambiare il nome mostrato)
   // lasciano la chiave identica, quindi pruneState non vede il buco e il nuovo
   // ingresso eredita lo stato vecchio: un account offline nello stato ma già in
   // live verrebbe annunciato, contro la regola "chi entra viene solo
-  // fotografato". I comandi /live chiamano questo per azzerare la voce.
+  // fotografato". I comandi /live chiamano questo per azzerare la voce; la
+  // generazione serve a scartare anche un annuncio già deciso da un giro in
+  // corso su quella voce.
   function forget(streamer) {
     const key = streamerKey(streamer);
     previous.delete(key);
     meta.seeded.delete(key);
+    generazioni.set(key, generazione(key) + 1);
   }
 
   // Un giro di controllo puo' restare appeso su una richiesta di rete o su
-  // Discord per secondi: nel frattempo /live rimuovi puo' aver tolto l'account,
-  // e annunciarlo dopo una rimozione confermata sarebbe un messaggio che
-  // nessuno ha piu' chiesto. Rileggiamo la lista appena prima di inviare.
-  function ancoraInLista(streamer) {
+  // Discord per secondi: nel frattempo /live puo' aver tolto (o tolto e
+  // rimesso) l'account, e annunciarlo dopo sarebbe un messaggio che nessuno ha
+  // piu' chiesto. Prima di inviare si rilegge la lista e si controlla che la
+  // voce non sia stata azzerata nel frattempo.
+  function ancoraDaAnnunciare(streamer, generazioneIniziale) {
     const key = streamerKey(streamer);
+    if (generazione(key) !== generazioneIniziale) return false;
     return readStreamers().some(altro => streamerKey(altro) === key);
   }
 
   async function tick() {
     if (stopped || ticking) return;
     ticking = true;
+    scadenzaGiro = Date.now() + budgetGiroMs;
     try {
       const streamers = readStreamers();
       pruneState(streamers);

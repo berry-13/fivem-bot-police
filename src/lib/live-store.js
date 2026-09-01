@@ -18,10 +18,13 @@ const MAX_DISPLAY_NAME = 60;
 
 // Accettiamo anche il link incollato al posto dello username: e' quello che un
 // admin ha sotto mano quando apre il canale dello streamer. Perche' un link
-// valga come account devono valere due cose: host di profilo della piattaforma
-// (niente clips.twitch.tv o link accorciati) e path della forma del profilo,
-// altrimenti twitch.tv/videos/1234567890 finirebbe in lista come account
-// "1234567890" e il bot controllerebbe un canale che non esiste.
+// valga come account devono valere tre cose: host di profilo della piattaforma
+// (niente clips.twitch.tv o link accorciati), path della forma del profilo
+// (un solo segmento, o due se il secondo e' una sottopagina del canale) e primo
+// segmento che non sia una pagina del sito. Su Twitch e Kick l'url di un canale
+// e' identico nella forma a quello di una pagina del sito (`/nome` come
+// `/login`), quindi l'elenco delle pagine note serve: senza interrogare le API
+// non c'e' modo di distinguerle guardando solo il link.
 const PLATFORMS = {
   twitch: {
     label: 'Twitch',
@@ -30,19 +33,22 @@ const PLATFORMS = {
     profileUrl: id => `https://www.twitch.tv/${id}`,
     domain: 'twitch.tv',
     profileHosts: new Set(['twitch.tv', 'www.twitch.tv', 'm.twitch.tv']),
-    // Prime parti di path che sono sezioni del sito, non canali.
+    // Pagine del sito che stanno dove starebbe il nome di un canale.
     reservedPaths: new Set([
-      'about', 'broadcast', 'clips', 'collections', 'directory', 'downloads',
-      'drops', 'event', 'events', 'following', 'followers', 'friends', 'jobs',
-      'legal', 'moderator', 'p', 'popout', 'privacy', 'products', 'prime',
-      'search', 'settings', 'store', 'subs', 'team', 'teams', 'terms', 'turbo',
-      'u', 'video', 'videos', 'wallet',
+      'about', 'auth', 'blog', 'brand', 'broadcast', 'careers', 'clips',
+      'collections', 'directory', 'dmca', 'downloads', 'drops', 'event',
+      'events', 'following', 'followers', 'friends', 'help', 'jobs', 'legal',
+      'login', 'logout', 'moderator', 'news', 'oauth2', 'p', 'password',
+      'popout', 'prime', 'privacy', 'products', 'register', 'search',
+      'settings', 'signup', 'store', 'subs', 'support', 'team', 'teams',
+      'terms', 'turbo', 'u', 'user', 'video', 'videos', 'wallet',
     ]),
-    profileFromPath(segments) {
-      const [first] = segments;
-      if (!first || first.startsWith('@')) return null;
-      return this.reservedPaths.has(first.toLowerCase()) ? null : first;
-    },
+    // Sottopagine di un canale: /nome/videos e' ancora il canale "nome".
+    channelSubPaths: new Set([
+      'about', 'chat', 'clips', 'collections', 'home', 'schedule', 'squad',
+      'videos',
+    ]),
+    profileFromPath: profiloDalPrimoSegmento,
   },
   tiktok: {
     label: 'TikTok',
@@ -52,10 +58,13 @@ const PLATFORMS = {
     domain: 'tiktok.com',
     profileHosts: new Set(['tiktok.com', 'www.tiktok.com', 'm.tiktok.com']),
     profileFromPath(segments) {
-      // Su TikTok il profilo e' sempre /@handle: senza chiocciola e' un video,
-      // un tag o una pagina del sito.
-      const handle = segments.find(segment => segment.startsWith('@'));
-      return handle ? handle.slice(1) : null;
+      // Su TikTok il profilo e' sempre /@handle, e la chiocciola lo rende
+      // impossibile da confondere con una pagina del sito.
+      const [primo, secondo, ...resto] = segments;
+      if (!primo?.startsWith('@') || resto.length > 0) return null;
+      // /@nome/live e /@nome/video/<id> arrivano dallo stesso canale.
+      if (secondo && !['live', 'video', 'playlist'].includes(secondo.toLowerCase())) return null;
+      return primo.slice(1);
     },
   },
   kick: {
@@ -66,17 +75,29 @@ const PLATFORMS = {
     domain: 'kick.com',
     profileHosts: new Set(['kick.com', 'www.kick.com']),
     reservedPaths: new Set([
-      'about', 'browse', 'categories', 'category', 'clip', 'clips', 'dashboard',
-      'following', 'help', 'popout', 'privacy', 'search', 'settings',
-      'subscriptions', 'terms', 'video', 'videos',
+      'about', 'auth', 'browse', 'careers', 'categories', 'category', 'clip',
+      'clips', 'dashboard', 'following', 'help', 'login', 'logout', 'password',
+      'popout', 'privacy', 'register', 'search', 'settings', 'signup',
+      'subscriptions', 'support', 'terms', 'user', 'video', 'videos',
     ]),
-    profileFromPath(segments) {
-      const [first] = segments;
-      if (!first || first.startsWith('@')) return null;
-      return this.reservedPaths.has(first.toLowerCase()) ? null : first;
-    },
+    channelSubPaths: new Set(['about', 'chat', 'clips', 'videos']),
+    profileFromPath: profiloDalPrimoSegmento,
   },
 };
+
+/**
+ * Twitch e Kick: il canale e' il primo segmento, da solo o seguito da una sua
+ * sottopagina. Cosi' /nome/videos resta il canale "nome", mentre /auth/login
+ * viene rifiutato invece di diventare l'account "auth".
+ * @param {string[]} segments
+ */
+function profiloDalPrimoSegmento(segments) {
+  const [primo, secondo, ...resto] = segments;
+  if (!primo || primo.startsWith('@') || resto.length > 0) return null;
+  if (this.reservedPaths.has(primo.toLowerCase())) return null;
+  if (secondo && !this.channelSubPaths.has(secondo.toLowerCase())) return null;
+  return primo;
+}
 
 // host -> piattaforma, per i soli host di profilo.
 const PLATFORM_BY_PROFILE_HOST = new Map(
