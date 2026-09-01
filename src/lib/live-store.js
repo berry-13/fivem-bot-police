@@ -200,13 +200,23 @@ function loadStreamers(storePath) {
 function saveStreamers(streamers, storePath) {
   const filePath = resolveStorePath(storePath);
   const body = { streamers: normalizeList(streamers).streamers };
+  // Scrittura atomica (file temporaneo + rename): un SIGTERM in mezzo a un
+  // writeFileSync lascerebbe un JSON troncato e al riavvio la lista tornerebbe
+  // al seed del config, buttando via gli account aggiunti a mano.
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
 
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(tmpPath, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmpPath, filePath);
     return true;
   } catch (error) {
     console.error(`Store live: scrittura fallita (${filePath}): ${error.message}`);
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      // Il temporaneo può non esistere: niente da ripulire.
+    }
     return false;
   }
 }

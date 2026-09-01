@@ -196,3 +196,25 @@ test('loadStreamers scarta le voci corrotte invece di far cadere il bot', () => 
   );
   assert.deepEqual(listStreamers(storePath), [{ platform: 'twitch', id: 'valido_1' }]);
 });
+
+test('saveStreamers scrive in modo atomico e non lascia temporanei in giro', () => {
+  assert.equal(saveStreamers([{ platform: 'twitch', id: 'salvinosalvo' }], storePath), true);
+
+  // Nessun file di appoggio dimenticato accanto allo store.
+  assert.deepEqual(fs.readdirSync(tmpDir), ['live.json']);
+
+  // Un errore di scrittura non lascia lo store a metà: il file precedente resta
+  // valido e la funzione dice che non ha salvato.
+  const dirComeFile = path.join(tmpDir, 'sottocartella');
+  fs.mkdirSync(dirComeFile);
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(saveStreamers([{ platform: 'kick', id: 'tizio' }], dirComeFile), false);
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(readFile().streamers, [{ platform: 'twitch', id: 'salvinosalvo' }]);
+  assert.deepEqual(fs.readdirSync(dirComeFile), []);
+});
