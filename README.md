@@ -170,9 +170,10 @@ Comportamento:
   la rete torna non parte un secondo annuncio della stessa live.
 - Twitch chiede tutti i canali in una sola chiamata; TikTok e Kick vanno
   interrogati uno per uno, a gruppi di 4 e con 10 secondi di timeout ciascuno.
-  Se il giro sfora l'80% dell'intervallo, gli account rimasti passano al giro
-  successivo (warning in console) e il giro dopo riparte da loro: nessuno resta
-  indietro.
+  Le tre piattaforme partono insieme, cosi' una lenta non ruba il tempo alle
+  altre. Se il giro sfora l'80% dell'intervallo, gli account rimasti passano al
+  giro successivo (warning in console) e il giro dopo riparte da loro: nessuno
+  resta indietro.
 - Senza `LIVE_CHANNEL_ID` il monitor resta spento (warning in console).
 - Senza credenziali Twitch gli account TikTok e Kick restano attivi.
 - Con la lista vuota il monitor resta acceso e in attesa: appena arriva il primo

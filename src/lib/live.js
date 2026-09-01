@@ -931,19 +931,24 @@ function startLiveMonitor(client, options = {}) {
       const streamers = readStreamers();
       pruneState(streamers);
 
-      const tiktokStreamers = streamers.filter(s => s.platform === 'tiktok');
-      const kickStreamers = streamers.filter(s => s.platform === 'kick');
+      // I provider partono insieme e condividono una sola scadenza: in fila
+      // indiana le quote si sommavano (TikTok lento + Kick = oltre l'intervallo),
+      // mentre in parallelo il giro dura al massimo il budget piu' la richiesta
+      // già in volo, e nessun provider resta a bocca asciutta per colpa di un
+      // altro. allSettled perche' un provider che esplode non deve lasciare gli
+      // altri a meta'.
+      const scadenza = Date.now() + budgetGiroMs;
+      const esiti = await Promise.allSettled([
+        checkTwitch(streamers.filter(s => s.platform === 'twitch')),
+        checkTikTok(streamers.filter(s => s.platform === 'tiktok'), scadenza),
+        checkKick(streamers.filter(s => s.platform === 'kick'), scadenza),
+      ]);
 
-      // Budget diviso tra i provider che hanno lavoro, ognuno col suo
-      // cronometro: con un solo budget condiviso e un ordine fisso, un TikTok
-      // lento si mangiava tutto il tempo e Kick non veniva mai interrogato.
-      // Twitch resta fuori dal conto: e' una sola chiamata per tutti i login.
-      const conLavoro = Math.max(1, [tiktokStreamers, kickStreamers].filter(l => l.length > 0).length);
-      const quotaMs = Math.round(budgetGiroMs / conLavoro);
-
-      await checkTwitch(streamers.filter(s => s.platform === 'twitch'));
-      await checkTikTok(tiktokStreamers, Date.now() + quotaMs);
-      await checkKick(kickStreamers, Date.now() + quotaMs);
+      for (const esito of esiti) {
+        if (esito.status === 'rejected') {
+          console.warn(`Live monitor: provider fallito: ${esito.reason?.message ?? esito.reason}`);
+        }
+      }
     } catch (error) {
       console.warn(`Live monitor: errore imprevisto: ${error.message}`);
     } finally {

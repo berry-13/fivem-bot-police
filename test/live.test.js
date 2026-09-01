@@ -1185,15 +1185,21 @@ test('startLiveMonitor non fa morire di fame Kick quando TikTok e\' lento', asyn
   const originalNow = Date.now;
   Date.now = () => adesso;
 
-  // Ogni richiesta TikTok "costa" 8s di orologio: con un budget condiviso
-  // (12s per un intervallo di 15s) Kick non partirebbe mai.
+  // Ogni richiesta TikTok "costa" 8s di orologio: con i provider in fila
+  // indiana (o con una scadenza sola guardata in sequenza) il tempo finisce
+  // prima che Kick venga interrogato. Lo yield prima di far avanzare
+  // l'orologio serve a modellare richieste che si sovrappongono davvero,
+  // invece di lavoro sincrono.
   const fetchImpl = async url => {
     const u = String(url);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
     if (u.includes('tiktok')) {
       interrogati.tiktok += 1;
       adesso += 8_000;
       return { ok: true, async json() { return { data: { liveRoom: { status: 4 } } }; } };
     }
+
     interrogati.kick += 1;
     return { ok: true, async json() { return { livestream: null }; } };
   };
