@@ -199,6 +199,49 @@ test('se la trascrizione non parte il ticket si chiude lo stesso, dicendolo', as
   assert.equal(channel.eliminato, true);
 });
 
+test('un doppio !close programma una sola delete del canale', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const logChannel = fakeTextChannel(ticketConfig.logChannelName);
+  const guild = fakeGuild({ logChannel });
+  const channel = fakeTextChannel('ticket-richiesta-esame-mario-rossi');
+  channel.messages = paginatore([[fakeMessage('m1', 'ciao')]]);
+
+  await interactionCreate.execute(fakeCloseInteraction({ guild, channel }), {});
+  await interactionCreate.execute(fakeCloseInteraction({ guild, channel }), {});
+
+  let deleteChiamate = 0;
+  channel.delete = async () => {
+    deleteChiamate += 1;
+    channel.eliminato = true;
+  };
+
+  t.mock.timers.tick(5000);
+  assert.equal(deleteChiamate, 1);
+});
+
+test('cancellare un ticket gia\' rimosso da Discord non finisce nei log come errore', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const logChannel = fakeTextChannel(ticketConfig.logChannelName);
+  const guild = fakeGuild({ logChannel });
+  const channel = fakeTextChannel('ticket-richiesta-esame-mario-rossi');
+  channel.messages = paginatore([[fakeMessage('m1', 'ciao')]]);
+  channel.delete = async () => {
+    const error = new Error('Unknown Channel');
+    error.code = 10003;
+    throw error;
+  };
+
+  const errori = [];
+  console.error = (...args) => errori.push(args);
+
+  await interactionCreate.execute(fakeCloseInteraction({ guild, channel }), {});
+  t.mock.timers.tick(5000);
+
+  assert.deepEqual(errori, []);
+});
+
 test('la trascrizione non si blocca se Discord continua a restituire la stessa pagina', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
 

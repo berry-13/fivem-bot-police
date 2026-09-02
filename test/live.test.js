@@ -13,6 +13,7 @@ const {
   parseTikTokRoomPayload,
   parseKickChannelPayload,
   fetchKickLive,
+  motivoErrore,
   resolveLiveMention,
   buildLiveNotification,
   transitionAction,
@@ -53,6 +54,18 @@ test('transitionAction al primo giro fa solo seed, senza notify', () => {
 
   // Di nuovo live: notify.
   assert.equal(transitionAction(previous, 'twitch:a', true, meta), 'notify');
+});
+
+test('motivoErrore risale la catena delle cause senza ripetere i messaggi', () => {
+  const conCausa = new Error('fetch failed');
+  conCausa.cause = new Error('connect ECONNRESET 104.18.32.7:443');
+  assert.equal(motivoErrore(conCausa), 'fetch failed; connect ECONNRESET 104.18.32.7:443');
+
+  // Due fallimenti con lo stesso messaggio non devono stampare "x; x".
+  const doppio = new Error('fetch failed', { cause: new Error('fetch failed') });
+  assert.equal(motivoErrore(doppio), 'fetch failed');
+
+  assert.equal(motivoErrore(new Error('boh')), 'boh');
 });
 
 test('parseTikTokRoomPayload riconosce status 2 come live', () => {
@@ -540,6 +553,92 @@ test('startLiveMonitor Kick: un invio Discord fallito viene ritentato al giro su
   assert.equal(inviati.length, 1);
 
   // Da qui in poi niente altri invii per lo stesso stream.
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
+  monitor.stop();
+});
+
+test('startLiveMonitor Twitch: un invio Discord fallito viene ritentato al giro successivo', async () => {
+  const inviati = [];
+  let sendShouldFail = true;
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      if (sendShouldFail) {
+        throw new Error('Discord API down');
+      }
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let twitchPayload = { data: [] };
+  const fetchImpl = async url => {
+    const u = String(url);
+
+    if (u.includes('oauth2/token')) {
+      return { ok: true, async json() { return { access_token: 't', expires_in: 3600 }; } };
+    }
+
+    if (u.includes('helix/streams')) {
+      return { ok: true, status: 200, async json() { return twitchPayload; } };
+    }
+
+    if (u.includes('helix/users')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { data: [{ login: 'salvinosalvo', display_name: 'SalvinoSalvo' }] };
+        },
+      };
+    }
+
+    return { ok: false, status: 404, async text() { return ''; }, async json() { return {}; } };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'twitch', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }],
+    twitchClientId: 'cid',
+    twitchClientSecret: 'sec',
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  await monitor._tick(); // seed offline
+  assert.equal(inviati.length, 0);
+
+  twitchPayload = {
+    data: [
+      {
+        user_login: 'salvinosalvo',
+        user_name: 'SalvinoSalvo',
+        title: 'Live',
+        game_name: 'Just Chatting',
+        viewer_count: 3,
+        thumbnail_url: 'https://x/{width}x{height}.jpg',
+      },
+    ],
+  };
+  await monitor._tick(); // offline -> live, ma l'invio fallisce
+  assert.equal(inviati.length, 0);
+
+  // L'invio fallito non deve aver marcato lo stream come "gia' notificato":
+  // come gia' fatto da Kick, al giro successivo, ancora live, si ritenta.
+  sendShouldFail = false;
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
   await monitor._tick();
   assert.equal(inviati.length, 1);
 

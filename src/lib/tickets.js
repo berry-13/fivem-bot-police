@@ -163,9 +163,24 @@ function closingMessage(trascrizioneSalvata) {
     : `🔒 Ticket in chiusura tra ${secondi} secondi... non sono riuscito a salvare la trascrizione.`;
 }
 
+// Due !close sullo stesso canale (o una cancellazione a mano nei 5 secondi di
+// attesa) non devono piazzare due delete: la seconda troverebbe il canale gia'
+// via e finirebbe nei log come errore. Lo stesso oggetto canale e' la chiave.
+const canaliInCancellazione = new WeakSet();
+
+// DiscordAPIError 10003 Unknown Channel: il canale e' stato cancellato, che e'
+// esattamente il risultato che la delete voleva. Non e' un errore da loggare.
+const UNKNOWN_CHANNEL_CODE = 10003;
+
 function scheduleTicketDeletion(channel) {
+  if (canaliInCancellazione.has(channel)) return;
+  canaliInCancellazione.add(channel);
+
   setTimeout(() => {
-    channel.delete().catch(console.error);
+    channel.delete().catch(error => {
+      if (error && error.code === UNKNOWN_CHANNEL_CODE) return;
+      console.error(error);
+    });
   }, CLOSE_DELAY_MS);
 }
 
