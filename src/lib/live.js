@@ -32,6 +32,26 @@ const DEFAULT_LIVE_MENTION = 'everyone';
 const NO_MENTION_KEYWORDS = new Set(['none', 'nessuno', 'no', 'off', '-']);
 
 /**
+ * I fallimenti di fetch di Node (undici) nascondono il motivo vero dentro
+ * error.cause: DNS, connessione resettata, IPv6 irraggiungibile, timeout di
+ * connect. Senza risalire la catena i log dicono solo "fetch failed" e non si
+ * capisce se il problema e' il provider o la rete del server. I messaggi
+ * identici lungo la catena compaiono una volta sola.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function motivoErrore(error) {
+  const parti = [];
+  let causa = error;
+  for (let profondita = 0; causa && profondita < 5; profondita += 1) {
+    const testo = causa.message || String(causa);
+    if (!parti.includes(testo)) parti.push(testo);
+    causa = causa.cause;
+  }
+  return parti.join('; ');
+}
+
+/**
  * Token app Twitch (client credentials) con cache in memoria.
  * @param {{ clientId: string, clientSecret: string, fetchImpl?: typeof fetch }} opts
  */
@@ -317,8 +337,11 @@ async function fetchTikTokLive(username, { fetchImpl = fetch, timeoutMs = 10_000
   } catch (error) {
     // Nessuna delle due strade ha risposto: lo stato resta sconosciuto e il
     // chiamante non aggiorna niente (come fa il percorso Kick).
-    const motivo = erroreRoom ? `${erroreRoom.message}; ${error.message}` : error.message;
-    throw new Error(`TikTok non raggiungibile per ${clean}: ${motivo}`, { cause: error });
+    const motivi = [...new Set([erroreRoom?.message, error.message].filter(Boolean))];
+    throw new Error(
+      `TikTok non raggiungibile per ${clean}: ${motivi.join('; ')}`,
+      { cause: error },
+    );
   }
 }
 
@@ -671,7 +694,7 @@ function startLiveMonitor(client, options = {}) {
       if (error.code === 'TWITCH_UNAUTHORIZED') {
         auth.invalidate();
       }
-      console.warn(`Live monitor Twitch: ${error.message}`);
+      console.warn(`Live monitor Twitch: ${motivoErrore(error)}`);
       return;
     }
 
@@ -709,7 +732,12 @@ function startLiveMonitor(client, options = {}) {
 
       const user = users.get(login);
       const channel = await resolveChannel();
-      if (!channel) continue;
+      if (!channel) {
+        // Come Kick: l'annuncio non e' partito, al giro successivo si ritenta
+        // invece di considerare lo stream "gia' notificato" per sempre.
+        previous.set(key, false);
+        continue;
+      }
 
       const payload = buildLiveNotification({
         platform: 'twitch',
@@ -730,6 +758,7 @@ function startLiveMonitor(client, options = {}) {
         await channel.send(payload);
         console.log(`Live monitor: notificato Twitch ${login}`);
       } catch (error) {
+        previous.set(key, false);
         console.warn(`Live monitor: invio fallito per Twitch ${login}: ${error.message}`);
       }
     }
@@ -743,7 +772,7 @@ function startLiveMonitor(client, options = {}) {
       try {
         info = await fetchTikTokLive(streamer.id, { fetchImpl });
       } catch (error) {
-        console.warn(`Live monitor TikTok ${streamer.id}: ${error.message}`);
+        console.warn(`Live monitor TikTok ${streamer.id}: ${motivoErrore(error)}`);
         return;
       }
 
@@ -754,7 +783,11 @@ function startLiveMonitor(client, options = {}) {
       if (action !== 'notify') return;
 
       const channel = await resolveChannel();
-      if (!channel) return;
+      if (!channel) {
+        // Come Kick: annuncio non partito, si ritenta al prossimo giro.
+        previous.set(key, false);
+        return;
+      }
 
       const payload = buildLiveNotification({
         platform: 'tiktok',
@@ -774,6 +807,7 @@ function startLiveMonitor(client, options = {}) {
         await channel.send(payload);
         console.log(`Live monitor: notificato TikTok ${streamer.id}`);
       } catch (error) {
+        previous.set(key, false);
         console.warn(`Live monitor: invio fallito per TikTok ${streamer.id}: ${error.message}`);
       }
     });
@@ -787,7 +821,7 @@ function startLiveMonitor(client, options = {}) {
       try {
         info = await fetchKickLive(streamer.id, { fetchImpl });
       } catch (error) {
-        console.warn(`Live monitor Kick ${streamer.id}: ${error.message}`);
+        console.warn(`Live monitor Kick ${streamer.id}: ${motivoErrore(error)}`);
         return;
       }
 
@@ -997,6 +1031,7 @@ module.exports = {
   fetchTikTokLive,
   parseKickChannelPayload,
   fetchKickLive,
+  motivoErrore,
   resolveLiveMention,
   mentionPayload,
   buildLiveNotification,
