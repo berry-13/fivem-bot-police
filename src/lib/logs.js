@@ -40,6 +40,23 @@ const PERMESSI_CANALE_LOG = [
   PermissionFlagsBits.AttachFiles,
 ];
 
+// Tutto quello che permetterebbe allo staff in sola lettura di scrivere,
+// cancellare o alterare i log, anche se il ruolo ce l'ha a livello di server.
+// Gli amministratori scavalcano qualsiasi overwrite: con loro non si puo' nulla.
+const PERMESSI_NEGATI_STAFF = [
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.SendMessagesInThreads,
+  PermissionFlagsBits.CreatePublicThreads,
+  PermissionFlagsBits.CreatePrivateThreads,
+  PermissionFlagsBits.AddReactions,
+  PermissionFlagsBits.ManageMessages,
+  PermissionFlagsBits.PinMessages,
+  PermissionFlagsBits.ManageThreads,
+  PermissionFlagsBits.ManageWebhooks,
+  PermissionFlagsBits.ManageChannels,
+  PermissionFlagsBits.ManageRoles,
+];
+
 // Un canale di log cancellato a mano genererebbe un warning a ogni evento:
 // ne scriviamo uno ogni dieci minuti per canale.
 const INTERVALLO_WARNING_MS = 10 * 60 * 1000;
@@ -178,6 +195,12 @@ async function createLogChannels(guild, { staffRole } = {}) {
 
   // Solo il bot scrive. Lo staff (se indicato) legge; gli amministratori vedono
   // comunque tutto per via del permesso Amministratore.
+  // Discord rifiuta un overwrite che nega un permesso che il bot stesso non ha:
+  // neghiamo solo quelli che ha e riportiamo gli altri a chi lancia il setup.
+  const negabili = PERMESSI_NEGATI_STAFF.filter(p => me.permissions.has(p));
+  const nonNegati = staffRole
+    ? PERMESSI_NEGATI_STAFF.filter(p => !me.permissions.has(p)).map(nomePermesso)
+    : [];
   const permissionOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
     {
@@ -189,13 +212,15 @@ async function createLogChannels(guild, { staffRole } = {}) {
     permissionOverwrites.push({
       id: staffRole.id,
       allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-      deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions],
+      deny: negabili,
     });
   }
 
-  let categoria = guild.channels.cache.find(
-    c => c.type === ChannelType.GuildCategory && c.name === logConfig.categoria,
-  );
+  // Solo la categoria creata da noi, per id: una categoria qualsiasi con lo
+  // stesso nome e' del server, e riscriverne i permessi nasconderebbe i suoi canali.
+  const categoriaId = store.getCategoryId(guild.id);
+  let categoria = categoriaId ? guild.channels.cache.get(categoriaId) : null;
+  if (categoria?.type !== ChannelType.GuildCategory) categoria = null;
   if (categoria) {
     // Rilanciare crea con un altro ruolo staff (o senza) deve togliere
     // l'accesso a quello vecchio, non solo darlo al nuovo.
@@ -207,6 +232,7 @@ async function createLogChannels(guild, { staffRole } = {}) {
       permissionOverwrites,
       reason: 'Setup canali di log',
     });
+    store.setCategoryId(guild.id, categoria.id);
   }
 
   const creati = [];
@@ -245,7 +271,7 @@ async function createLogChannels(guild, { staffRole } = {}) {
     store.setChannel(guild.id, tipo.value, channel.id);
   }
 
-  return { categoria, creati, riusati, esterni };
+  return { categoria, creati, riusati, esterni, nonNegati };
 }
 
 /* ------------------------------------------------------------------------ */

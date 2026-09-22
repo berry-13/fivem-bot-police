@@ -22,6 +22,11 @@ const foto = new Map(); // guildId -> Map(code -> invito)
 const vanity = new Map(); // guildId -> utilizzi del vanity, o null
 const eliminati = new Map(); // guildId -> Map(code -> { ...invito, eliminatoIl })
 const code = new Map(); // guildId -> promise dell'ultimo confronto in coda
+const pendenti = new Map(); // guildId -> { invito, restanti, il }
+
+// Utilizzi gia' visti ma non ancora assegnati: oltre questa eta' l'ingresso a
+// cui spettavano e' andato perso (evento mancato) e non vanno regalati a un altro.
+const FINESTRA_PENDENTI_MS = 30_000;
 
 // Un invito esaurito da un ingresso viene cancellato un attimo prima che
 // arrivi guildMemberAdd: oltre questa finestra non e' piu' un candidato.
@@ -133,12 +138,27 @@ async function confronta(guild) {
   // Nessuna foto precedente (avvio fallito, server nuovo): questa diventa la base.
   if (!prima) return { stato: 'sconosciuto' };
 
+  // Due persone entrate con lo stesso invito prima che il primo confronto
+  // finisca: il fetch vede il contatore salire di due. Il secondo utilizzo resta
+  // in sospeso per l'ingresso successivo in coda, invece di andare perso.
+  const inSospeso = pendenti.get(guild.id);
+  pendenti.delete(guild.id);
+  const sospesoValido = inSospeso && Date.now() - inSospeso.il < FINESTRA_PENDENTI_MS;
+
   const cresciuti = [...dopo.values()].filter(i => i.uses > (prima.get(i.code)?.uses ?? 0));
-  if (cresciuti.length === 1) {
-    const [invito] = cresciuti;
-    return { stato: 'invito', invito, totaleInvitante: utilizziTotali(dopo, invito.inviterId) };
+  if (cresciuti.length === 0 && sospesoValido) {
+    return registraUso(guild, inSospeso.invito, inSospeso.restanti, dopo);
   }
-  if (cresciuti.length > 1) return { stato: 'ambiguo', candidati: cresciuti };
+  if (cresciuti.length === 1 && (!sospesoValido || inSospeso.invito.code === cresciuti[0].code)) {
+    const [invito] = cresciuti;
+    const delta = invito.uses - (prima.get(invito.code)?.uses ?? 0) + (sospesoValido ? inSospeso.restanti : 0);
+    return registraUso(guild, invito, delta, dopo);
+  }
+  if (cresciuti.length > 1 || sospesoValido) {
+    // Piu' inviti diversi saliti insieme: non si puo' sapere chi ha usato quale.
+    const candidati = sospesoValido ? [...cresciuti, inSospeso.invito] : cresciuti;
+    return { stato: 'ambiguo', candidati: [...new Map(candidati.map(i => [i.code, i])).values()] };
+  }
 
   if (vanityPrima !== null && vanityPrima !== undefined && vanityDopo !== null && vanityDopo > vanityPrima) {
     return { stato: 'vanity', code: guild.vanityURLCode, uses: vanityDopo };
@@ -175,6 +195,14 @@ async function confronta(guild) {
   return { stato: 'sconosciuto' };
 }
 
+/** Assegna un utilizzo a questo ingresso e mette da parte gli altri. */
+function registraUso(guild, invito, utilizzi, dopo) {
+  if (utilizzi > 1) {
+    pendenti.set(guild.id, { invito, restanti: utilizzi - 1, il: Date.now() });
+  }
+  return { stato: 'invito', invito, totaleInvitante: utilizziTotali(dopo, invito.inviterId) };
+}
+
 /**
  * Quale invito ha usato chi e' appena entrato. Non lancia mai: nel peggiore
  * dei casi torna { stato: 'sconosciuto' | 'permessi' | 'errore' }.
@@ -197,5 +225,6 @@ module.exports = {
     vanity.clear();
     eliminati.clear();
     code.clear();
+    pendenti.clear();
   },
 };

@@ -253,7 +253,7 @@ Configurazione, solo amministratori:
 
 | Comando | Cosa fa |
 | --- | --- |
-| `/setup-log crea [staff]` | Crea la categoria privata **Server Log** con un canale per tipo. Il ruolo `staff`, se indicato, legge in sola lettura. Rilanciarlo ricrea solo i canali cancellati. |
+| `/setup-log crea [staff]` | Crea la categoria privata **Server Log** con un canale per tipo. Il ruolo `staff`, se indicato, legge in sola lettura: scrivere, cancellare, fissare, creare thread o webhook gli viene negato anche se lo puo' fare nel resto del server (tranne agli amministratori). Rilanciarlo riapplica i permessi e ricrea solo i canali cancellati; una categoria del server con lo stesso nome non viene mai toccata. |
 | `/setup-log imposta tipo canale` | Manda un tipo di log in un canale esistente (controlla prima che il bot ci possa scrivere). |
 | `/setup-log disattiva tipo` | Spegne un tipo, o `Tutti`. I canali non vengono eliminati. |
 | `/setup-log stato` | Mostra dove va ogni tipo e quali permessi mancano. |

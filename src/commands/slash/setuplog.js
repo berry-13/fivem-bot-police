@@ -113,7 +113,7 @@ async function crea(interaction, guild) {
       colore: COLORI.entrato,
       titolo: 'Log configurati',
       sottotitolo: `Categoria ${risultato.categoria.name}`,
-      corpo: righe.join('\n') + avvisoAuditLog(guild),
+      corpo: righe.join('\n') + avvisoAuditLog(guild) + avvisoNonNegati(risultato.nonNegati),
       piede: [staffRole ? `Lettura per ${staffRole.name}` : 'Visibili solo agli amministratori'],
     }),
   );
@@ -131,10 +131,13 @@ async function imposta(interaction, guild) {
     return;
   }
 
+  const precedente = store.getChannelId(guild.id, tipo);
   store.setChannel(guild.id, tipo, channel.id);
 
-  // Conferma nel canale stesso: prova che il bot ci scrive davvero.
-  await sendLog(
+  // Conferma nel canale stesso: prova che il bot ci scrive davvero. Se non
+  // passa torniamo alla configurazione di prima invece di dichiarare un
+  // successo che lascerebbe i log puntati su un canale inutilizzabile.
+  const confermato = await sendLog(
     guild,
     tipo,
     creaScheda({
@@ -144,6 +147,17 @@ async function imposta(interaction, guild) {
       piede: [`Configurato da ${interaction.user.tag}`],
     }),
   );
+
+  if (!confermato) {
+    if (precedente) store.setChannel(guild.id, tipo, precedente);
+    else store.removeChannel(guild.id, tipo);
+    await safeInteractionReply(interaction, {
+      content:
+        `Non sono riuscito a scrivere in ${channel}: configurazione non cambiata. ` +
+        'Controlla che il canale esista e che io possa scriverci, poi riprova.',
+    });
+    return;
+  }
 
   await safeInteractionReply(interaction, {
     content: `Log **${etichetta(tipo)}** impostati in ${channel}.${TIPI_AUDIT.has(tipo) ? avvisoAuditLog(guild) : ''}`,
@@ -206,6 +220,14 @@ async function stato(interaction, guild) {
   });
 
   await safeInteractionReply(interaction, scheda);
+}
+
+function avvisoNonNegati(nonNegati) {
+  if (!nonNegati?.length) return '';
+  return (
+    `\n\nAttenzione: non ho i permessi ${nonNegati.map(p => `\`${p}\``).join(', ')}, quindi non posso ` +
+    'toglierli allo staff nei canali di log. Se il ruolo staff li ha, puo\' ancora usarli li\'.'
+  );
 }
 
 function avvisoAuditLog(guild) {

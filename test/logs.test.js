@@ -572,3 +572,98 @@ test('un pin dentro un canale di log non viene loggato, la sua eliminazione si',
   );
   assert.equal(logServer.inviati.length, 1);
 });
+
+/* ------------------------------------------------------ fix review round 2 */
+
+const PERMESSI_SETUP = [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles];
+
+test('crea non si appropria di una categoria del server con lo stesso nome', async () => {
+  const altrui = fakeChannel('cat-altrui', { type: ChannelType.GuildCategory, name: 'Server Log' });
+  const guild = fakeGuild({ channels: [altrui], permessi: PERMESSI_SETUP });
+
+  const { categoria } = await logs.createLogChannels(guild);
+
+  assert.notEqual(categoria.id, 'cat-altrui');
+  assert.equal(altrui.overwrites.length, 0, 'permessi della categoria altrui toccati');
+  assert.equal(store.getCategoryId(GUILD_ID), categoria.id);
+
+  // Al secondo giro riusa la sua, non quella altrui.
+  const secondo = await logs.createLogChannels(guild);
+  assert.equal(secondo.categoria.id, categoria.id);
+  assert.equal(altrui.overwrites.length, 0);
+});
+
+test('lo staff in sola lettura perde anche i permessi di moderazione che il bot puo\' negare', async () => {
+  const guild = fakeGuild({
+    permessi: [
+      ...PERMESSI_SETUP,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.ManageMessages,
+      PermissionFlagsBits.ManageWebhooks,
+    ],
+  });
+
+  const { nonNegati } = await logs.createLogChannels(guild, { staffRole: { id: 'staff' } });
+
+  const staff = guild.creati[0].permissionOverwrites.find(o => o.id === 'staff');
+  for (const p of [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ManageWebhooks]) {
+    assert.ok(staff.deny.includes(p), `manca il deny di ${p}`);
+  }
+  // Quelli che il bot non ha non si possono negare: Discord rifiuterebbe
+  // l'intero overwrite. Vengono riportati invece.
+  assert.ok(!staff.deny.includes(PermissionFlagsBits.ManageThreads));
+  assert.ok(nonNegati.includes('ManageThreads'));
+  assert.ok(!nonNegati.includes('ManageMessages'));
+});
+
+function fakeInterazione(guild, { tipo, canale }) {
+  const risposte = [];
+  return {
+    risposte,
+    guild,
+    user: { tag: 'admin' },
+    deferred: true,
+    replied: false,
+    createdTimestamp: Date.now(),
+    options: {
+      getSubcommand: () => 'imposta',
+      getString: () => tipo,
+      getChannel: () => canale,
+    },
+    deferReply: async () => {},
+    editReply: async payload => risposte.push(payload),
+  };
+}
+
+test('imposta non dichiara successo se la conferma nel canale non parte, e ripristina', async () => {
+  const vecchio = fakeChannel('log-vecchio');
+  const rotto = fakeChannel('log-rotto', {
+    sendImpl: async () => {
+      throw new Error('Missing Access');
+    },
+  });
+  rotto.permissionsFor = () => ({ missing: () => [] });
+  const guild = fakeGuild({ channels: [vecchio, rotto] });
+  store.setChannel(GUILD_ID, 'voce', 'log-vecchio');
+
+  const interaction = fakeInterazione(guild, { tipo: 'voce', canale: rotto });
+  await setupLog.execute(interaction);
+
+  assert.equal(store.getChannelId(GUILD_ID, 'voce'), 'log-vecchio');
+  assert.match(interaction.risposte.at(-1).content, /configurazione non cambiata/);
+});
+
+test('lo store si scrive in modo atomico e non lascia file temporanei', t => {
+  store.setChannel(GUILD_ID, 'messaggi', '111');
+  const prima = fs.readFileSync(process.env.LOGS_STORE_PATH, 'utf8');
+
+  // Rename che fallisce (disco pieno, permessi): il file buono resta intatto.
+  t.mock.method(fs, 'renameSync', () => {
+    throw new Error('ENOSPC');
+  });
+  assert.throws(() => store.setChannel(GUILD_ID, 'voce', '222'), /ENOSPC/);
+  t.mock.restoreAll();
+
+  assert.equal(fs.readFileSync(process.env.LOGS_STORE_PATH, 'utf8'), prima);
+  assert.deepEqual(fs.readdirSync(tmpDir).filter(f => f.endsWith('.tmp')), []);
+});

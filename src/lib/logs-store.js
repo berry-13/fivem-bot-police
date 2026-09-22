@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Canali di log per server, su disco per sopravvivere ai restart.
-// Forma: { [guildId]: { canali: { [tipo]: channelId } } }
+// Forma: { [guildId]: { canali: { [tipo]: channelId }, categoriaId?: string } }
 const DEFAULT_PATH = path.join(process.cwd(), 'data', 'logs.json');
 
 // Lo store viene letto a ogni evento loggato (ogni messaggio eliminato, ogni
@@ -40,7 +40,17 @@ function loadStore(storePath) {
 function saveStore(data, storePath) {
   const filePath = resolveStorePath(storePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  // Scrittura atomica: un file troncato a meta' (disco pieno, processo ucciso)
+  // verrebbe letto come store vuoto e spegnerebbe tutti i log in silenzio.
+  // Il rename nella stessa cartella sostituisce il file in un colpo solo.
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (error) {
+    fs.rmSync(tmpPath, { force: true });
+    throw error;
+  }
   cache = data;
   cachePath = filePath;
 }
@@ -70,6 +80,16 @@ function removeChannel(guildId, tipo, storePath) {
   return true;
 }
 
+/** Categoria creata da /setup-log crea: l'unica che crea puo' riusare e modificare. */
+function getCategoryId(guildId, storePath) {
+  return loadStore(storePath)[guildId]?.categoriaId ?? null;
+}
+
+function setCategoryId(guildId, categoriaId, storePath) {
+  const store = loadStore(storePath);
+  saveStore({ ...store, [guildId]: { ...store[guildId], categoriaId: String(categoriaId) } }, storePath);
+}
+
 function _resetCache() {
   cache = null;
   cachePath = null;
@@ -77,11 +97,13 @@ function _resetCache() {
 
 module.exports = {
   DEFAULT_PATH,
+  getCategoryId,
   getChannelId,
   getChannels,
   loadStore,
   removeChannel,
   resolveStorePath,
+  setCategoryId,
   setChannel,
   _resetCache,
 };

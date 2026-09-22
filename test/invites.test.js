@@ -158,3 +158,34 @@ test('un errore di Discord non lancia e non blocca la coda del server', async ()
   guild.stato.inviti = [invito('aaa', 1)];
   assert.equal((await trovaInvitoUsato(guild)).invito.code, 'aaa');
 });
+
+test('due ingressi con lo stesso invito prima del primo confronto vengono attribuiti entrambi', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 4), invito('bbb', 0)] });
+  await initInviteTracking(guild);
+
+  // Il contatore e' gia' salito di due quando parte il primo confronto.
+  guild.stato.inviti = [invito('aaa', 6), invito('bbb', 0)];
+  const [primo, secondo] = await Promise.all([trovaInvitoUsato(guild), trovaInvitoUsato(guild)]);
+
+  assert.equal(primo.stato, 'invito');
+  assert.equal(primo.invito.code, 'aaa');
+  assert.equal(secondo.stato, 'invito');
+  assert.equal(secondo.invito.code, 'aaa');
+
+  // Il terzo non eredita nulla: gli utilizzi in sospeso sono finiti.
+  assert.equal((await trovaInvitoUsato(guild)).stato, 'sconosciuto');
+});
+
+test('un utilizzo in sospeso e un altro invito salito insieme sono ambigui', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 0), invito('bbb', 0)] });
+  await initInviteTracking(guild);
+
+  guild.stato.inviti = [invito('aaa', 2), invito('bbb', 0)];
+  await trovaInvitoUsato(guild);
+
+  guild.stato.inviti = [invito('aaa', 2), invito('bbb', 1)];
+  const risultato = await trovaInvitoUsato(guild);
+
+  assert.equal(risultato.stato, 'ambiguo');
+  assert.deepEqual(risultato.candidati.map(i => i.code).sort(), ['aaa', 'bbb']);
+});
