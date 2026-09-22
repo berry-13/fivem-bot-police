@@ -22,7 +22,7 @@ const foto = new Map(); // guildId -> Map(code -> invito)
 const vanity = new Map(); // guildId -> utilizzi del vanity, o null
 const eliminati = new Map(); // guildId -> Map(code -> { ...invito, eliminatoIl })
 const code = new Map(); // guildId -> promise dell'ultimo confronto in coda
-const pendenti = new Map(); // guildId -> { invito, restanti, il }
+const pendenti = new Map(); // guildId -> { fonti: Map(code -> invito), unita, il }
 
 // Utilizzi gia' visti ma non ancora assegnati: oltre questa eta' l'ingresso a
 // cui spettavano e' andato perso (evento mancato) e non vanno regalati a un altro.
@@ -138,30 +138,44 @@ async function confronta(guild) {
   // Nessuna foto precedente (avvio fallito, server nuovo): questa diventa la base.
   if (!prima) return { stato: 'sconosciuto' };
 
-  // Due persone entrate con lo stesso invito prima che il primo confronto
-  // finisca: il fetch vede il contatore salire di due. Il secondo utilizzo resta
-  // in sospeso per l'ingresso successivo in coda, invece di andare perso.
+  // Piu' persone entrate prima che il primo confronto finisca: il fetch vede
+  // i contatori salire di piu' di uno. Ogni ingresso consuma un'unita'; le
+  // altre restano in sospeso, con le fonti possibili, per i successivi in coda.
   const inSospeso = pendenti.get(guild.id);
   pendenti.delete(guild.id);
   const sospesoValido = inSospeso && Date.now() - inSospeso.il < FINESTRA_PENDENTI_MS;
 
-  const cresciuti = [...dopo.values()].filter(i => i.uses > (prima.get(i.code)?.uses ?? 0));
-  if (cresciuti.length === 0 && sospesoValido) {
-    return registraUso(guild, inSospeso.invito, inSospeso.restanti, dopo);
+  const fonti = new Map(sospesoValido ? inSospeso.fonti : []);
+  let unita = sospesoValido ? inSospeso.unita : 0;
+  for (const invito of dopo.values()) {
+    const delta = invito.uses - (prima.get(invito.code)?.uses ?? 0);
+    if (delta > 0) {
+      fonti.set(invito.code, invito);
+      unita += delta;
+    }
   }
-  if (cresciuti.length === 1 && (!sospesoValido || inSospeso.invito.code === cresciuti[0].code)) {
-    const [invito] = cresciuti;
-    const delta = invito.uses - (prima.get(invito.code)?.uses ?? 0) + (sospesoValido ? inSospeso.restanti : 0);
-    return registraUso(guild, invito, delta, dopo);
-  }
-  if (cresciuti.length > 1 || sospesoValido) {
-    // Piu' inviti diversi saliti insieme: non si puo' sapere chi ha usato quale.
-    const candidati = sospesoValido ? [...cresciuti, inSospeso.invito] : cresciuti;
-    return { stato: 'ambiguo', candidati: [...new Map(candidati.map(i => [i.code, i])).values()] };
+  // L'URL personalizzato e' una fonte come le altre: se sale insieme a un
+  // invito normale nello stesso confronto, gli ingressi non vanno confusi.
+  if (vanityPrima !== null && vanityPrima !== undefined && vanityDopo !== null && vanityDopo > vanityPrima) {
+    fonti.set(guild.vanityURLCode, {
+      code: guild.vanityURLCode,
+      uses: vanityDopo,
+      maxUses: 0,
+      inviterId: null,
+      vanity: true,
+    });
+    unita += vanityDopo - vanityPrima;
   }
 
-  if (vanityPrima !== null && vanityPrima !== undefined && vanityDopo !== null && vanityDopo > vanityPrima) {
-    return { stato: 'vanity', code: guild.vanityURLCode, uses: vanityDopo };
+  if (unita > 0 && fonti.size > 0) {
+    if (unita > 1) pendenti.set(guild.id, { fonti, unita: unita - 1, il: Date.now() });
+    if (fonti.size === 1) {
+      const [invito] = fonti.values();
+      if (invito.vanity) return { stato: 'vanity', code: invito.code, uses: invito.uses };
+      return { stato: 'invito', invito, totaleInvitante: utilizziTotali(dopo, invito.inviterId) };
+    }
+    // Piu' fonti diverse salite insieme: non si puo' sapere chi ha usato quale.
+    return { stato: 'ambiguo', candidati: [...fonti.values()] };
   }
 
   // Inviti a utilizzi limitati spariti al posto di salire: sia quelli di cui e'
@@ -193,14 +207,6 @@ async function confronta(guild) {
   }
 
   return { stato: 'sconosciuto' };
-}
-
-/** Assegna un utilizzo a questo ingresso e mette da parte gli altri. */
-function registraUso(guild, invito, utilizzi, dopo) {
-  if (utilizzi > 1) {
-    pendenti.set(guild.id, { invito, restanti: utilizzi - 1, il: Date.now() });
-  }
-  return { stato: 'invito', invito, totaleInvitante: utilizziTotali(dopo, invito.inviterId) };
 }
 
 /**

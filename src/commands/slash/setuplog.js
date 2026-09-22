@@ -65,8 +65,14 @@ module.exports = {
     .addSubcommand(sub => sub.setName('stato').setDescription('Mostra la configurazione e i permessi mancanti')),
 
   async execute(interaction) {
-    // Ack subito: "crea" puo' richiedere diverse chiamate a Discord.
-    await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+    // Ack subito: "crea" puo' richiedere diverse chiamate a Discord. Se l'ack
+    // fallisce (interazione scaduta, gia' presa da un'altra istanza) non si
+    // tocca nulla: niente canali creati o configurazione cambiata senza che
+    // nessuno lo veda. Il motivo lo logga safeDeferReply.
+    if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) {
+      console.warn('/setup-log: comando annullato, interazione non riconosciuta da Discord.');
+      return;
+    }
 
     const guild = interaction.guild;
     if (!guild) {

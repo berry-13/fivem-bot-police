@@ -127,11 +127,16 @@ test('due ingressi simultanei vengono confrontati uno dopo l\'altro', async () =
   guild.stato.inviti = [invito('aaa', 1), invito('bbb', 1)];
   const [primo, secondo] = await Promise.all([trovaInvitoUsato(guild), trovaInvitoUsato(guild)]);
 
-  // Il primo vede due inviti saliti e lo dice; il secondo non vede piu'
-  // differenze invece di attribuirsi lo stesso invito.
+  // Due inviti diversi saliti insieme: nessuno dei due ingressi si puo'
+  // attribuire con certezza, ma entrambi sanno tra quali inviti scegliere,
+  // invece di attribuirsi lo stesso invito o finire come sconosciuti.
   assert.equal(primo.stato, 'ambiguo');
-  assert.equal(secondo.stato, 'sconosciuto');
+  assert.equal(secondo.stato, 'ambiguo');
+  assert.deepEqual(secondo.candidati.map(i => i.code).sort(), ['aaa', 'bbb']);
   assert.equal(guild.stato.fetchCount, 3);
+
+  // Le unita' sono finite: un terzo ingresso non eredita nulla.
+  assert.equal((await trovaInvitoUsato(guild)).stato, 'sconosciuto');
 });
 
 test('senza Gestire il server non interroga Discord', async () => {
@@ -188,4 +193,20 @@ test('un utilizzo in sospeso e un altro invito salito insieme sono ambigui', asy
 
   assert.equal(risultato.stato, 'ambiguo');
   assert.deepEqual(risultato.candidati.map(i => i.code).sort(), ['aaa', 'bbb']);
+});
+
+test('un invito normale e l\'URL personalizzato saliti insieme non perdono il secondo ingresso', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 0)], vanityURLCode: 'sheriff' });
+  guild.stato.vanityUses = 10;
+  await initInviteTracking(guild);
+
+  guild.stato.inviti = [invito('aaa', 1)];
+  guild.stato.vanityUses = 11;
+  const [primo, secondo] = await Promise.all([trovaInvitoUsato(guild), trovaInvitoUsato(guild)]);
+
+  for (const risultato of [primo, secondo]) {
+    assert.equal(risultato.stato, 'ambiguo');
+    assert.deepEqual(risultato.candidati.map(i => i.code).sort(), ['aaa', 'sheriff']);
+  }
+  assert.equal((await trovaInvitoUsato(guild)).stato, 'sconosciuto');
 });

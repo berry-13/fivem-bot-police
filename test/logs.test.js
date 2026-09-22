@@ -667,3 +667,20 @@ test('lo store si scrive in modo atomico e non lascia file temporanei', t => {
   assert.equal(fs.readFileSync(process.env.LOGS_STORE_PATH, 'utf8'), prima);
   assert.deepEqual(fs.readdirSync(tmpDir).filter(f => f.endsWith('.tmp')), []);
 });
+
+test('setup-log non tocca nulla se Discord non accetta l\'ack dell\'interazione', async () => {
+  const canale = fakeChannel('log-nuovo');
+  canale.permissionsFor = () => ({ missing: () => [] });
+  const guild = fakeGuild({ channels: [canale] });
+  const interaction = fakeInterazione(guild, { tipo: 'voce', canale });
+  interaction.deferReply = async () => {
+    const error = new Error('Unknown interaction');
+    error.code = 10062;
+    throw error;
+  };
+
+  await setupLog.execute(interaction);
+
+  assert.equal(store.getChannelId(GUILD_ID, 'voce'), null);
+  assert.equal(canale.inviati.length, 0);
+});
