@@ -1,0 +1,129 @@
+'use strict';
+
+const { test, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const { Collection, PermissionFlagsBits } = require('discord.js');
+
+const {
+  initInviteTracking,
+  onInviteCreate,
+  onInviteDelete,
+  trovaInvitoUsato,
+  _resetState,
+} = require('../src/lib/invites');
+
+beforeEach(() => _resetState());
+
+function invito(code, uses, { maxUses = 0, inviterId = 'mod-1' } = {}) {
+  return { code, uses, maxUses, inviterId };
+}
+
+/** Un server i cui inviti si cambiano a mano tra un fetch e l'altro. */
+function fakeGuild({ inviti = [], permessi = [PermissionFlagsBits.ManageGuild], vanityURLCode = null } = {}) {
+  const stato = { inviti, vanityUses: 0, fetchCount: 0 };
+  const guild = {
+    id: 'guild-1',
+    name: 'test',
+    vanityURLCode,
+    stato,
+    members: { me: { permissions: { has: p => permessi.includes(p) } } },
+    invites: {
+      fetch: async () => {
+        stato.fetchCount += 1;
+        return new Collection(stato.inviti.map(i => [i.code, { ...i }]));
+      },
+    },
+    fetchVanityData: async () => ({ code: vanityURLCode, uses: stato.vanityUses }),
+  };
+  return guild;
+}
+
+test('trova l\'invito i cui utilizzi sono saliti e conta gli ingressi dell\'invitante', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 1), invito('bbb', 5, { inviterId: 'mod-2' }), invito('ccc', 2)] });
+  await initInviteTracking(guild);
+
+  guild.stato.inviti = [invito('aaa', 2), invito('bbb', 5, { inviterId: 'mod-2' }), invito('ccc', 2)];
+  const risultato = await trovaInvitoUsato(guild);
+
+  assert.equal(risultato.stato, 'invito');
+  assert.equal(risultato.invito.code, 'aaa');
+  assert.equal(risultato.totaleInvitante, 4);
+});
+
+test('riconosce l\'URL personalizzato del server', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 1)], vanityURLCode: 'sheriff' });
+  guild.stato.vanityUses = 10;
+  await initInviteTracking(guild);
+
+  guild.stato.vanityUses = 11;
+  const risultato = await trovaInvitoUsato(guild);
+
+  assert.deepEqual(risultato, { stato: 'vanity', code: 'sheriff', uses: 11 });
+});
+
+test('un invito a utilizzo singolo che sparisce con l\'ingresso viene attribuito', async () => {
+  const guild = fakeGuild({ inviti: [invito('uno', 0, { maxUses: 1 }), invito('altro', 3)] });
+  await initInviteTracking(guild);
+
+  // Discord cancella l'invito esaurito prima che arrivi guildMemberAdd.
+  onInviteDelete({ code: 'uno', guild });
+  guild.stato.inviti = [invito('altro', 3)];
+  const risultato = await trovaInvitoUsato(guild);
+
+  assert.equal(risultato.stato, 'invito');
+  assert.equal(risultato.invito.code, 'uno');
+  assert.equal(risultato.invito.uses, 1);
+  assert.equal(risultato.esaurito, true);
+});
+
+test('un invito creato dopo l\'avvio viene tracciato grazie a inviteCreate', async () => {
+  const guild = fakeGuild();
+  await initInviteTracking(guild);
+
+  onInviteCreate({ code: 'nuovo', uses: 0, maxUses: 0, inviterId: 'mod-3', guild });
+  guild.stato.inviti = [invito('nuovo', 1, { inviterId: 'mod-3' })];
+  const risultato = await trovaInvitoUsato(guild);
+
+  assert.equal(risultato.invito.code, 'nuovo');
+  assert.equal(risultato.invito.inviterId, 'mod-3');
+});
+
+test('due ingressi simultanei vengono confrontati uno dopo l\'altro', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 0), invito('bbb', 0)] });
+  await initInviteTracking(guild);
+
+  // Entrambi gli ingressi sono gia' contati quando parte il primo fetch.
+  guild.stato.inviti = [invito('aaa', 1), invito('bbb', 1)];
+  const [primo, secondo] = await Promise.all([trovaInvitoUsato(guild), trovaInvitoUsato(guild)]);
+
+  // Il primo vede due inviti saliti e lo dice; il secondo non vede piu'
+  // differenze invece di attribuirsi lo stesso invito.
+  assert.equal(primo.stato, 'ambiguo');
+  assert.equal(secondo.stato, 'sconosciuto');
+  assert.equal(guild.stato.fetchCount, 3);
+});
+
+test('senza Gestire il server non interroga Discord', async () => {
+  const guild = fakeGuild({ permessi: [] });
+  guild.invites.fetch = async () => {
+    throw new Error('non deve essere chiamato');
+  };
+
+  assert.equal(await initInviteTracking(guild), false);
+  assert.deepEqual(await trovaInvitoUsato(guild), { stato: 'permessi' });
+});
+
+test('un errore di Discord non lancia e non blocca la coda del server', async () => {
+  const guild = fakeGuild({ inviti: [invito('aaa', 0)] });
+  await initInviteTracking(guild);
+
+  const fetchOriginale = guild.invites.fetch;
+  guild.invites.fetch = async () => {
+    throw new Error('503');
+  };
+  assert.deepEqual(await trovaInvitoUsato(guild), { stato: 'errore' });
+
+  guild.invites.fetch = fetchOriginale;
+  guild.stato.inviti = [invito('aaa', 1)];
+  assert.equal((await trovaInvitoUsato(guild)).invito.code, 'aaa');
+});
