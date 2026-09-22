@@ -129,6 +129,13 @@ async function confronta(guild) {
   try {
     dopo = await leggiInviti(guild);
   } catch {
+    // L'ingresso di adesso ha gia' fatto salire un contatore che non abbiamo
+    // visto: confrontare il prossimo con la foto vecchia gli attribuirebbe
+    // quell'invito. Buttiamo foto e sospesi; la prossima lettura riuscita fa
+    // da nuova base.
+    foto.delete(guild.id);
+    vanity.delete(guild.id);
+    pendenti.delete(guild.id);
     return { stato: 'errore' };
   }
   const vanityDopo = await leggiVanity(guild);
