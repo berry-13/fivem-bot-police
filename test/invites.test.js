@@ -159,8 +159,14 @@ test('un errore di Discord non lancia e non blocca la coda del server', async ()
   };
   assert.deepEqual(await trovaInvitoUsato(guild), { stato: 'errore' });
 
+  // Chi e' entrato durante l'errore ha usato "aaa". Il prossimo arriva da
+  // Scopri server: non deve ereditare quell'utilizzo dalla foto vecchia.
   guild.invites.fetch = fetchOriginale;
   guild.stato.inviti = [invito('aaa', 1)];
+  assert.deepEqual(await trovaInvitoUsato(guild), { stato: 'sconosciuto' });
+
+  // Da qui la nuova base funziona di nuovo.
+  guild.stato.inviti = [invito('aaa', 2)];
   assert.equal((await trovaInvitoUsato(guild)).invito.code, 'aaa');
 });
 
