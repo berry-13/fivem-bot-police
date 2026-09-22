@@ -2,6 +2,7 @@
 
 const { ensureMembersCached } = require('../lib/gerarchia');
 const { startLiveMonitor } = require('../lib/live');
+const { initInviteTracking } = require('../lib/invites');
 
 module.exports = {
   name: 'clientReady',
@@ -22,6 +23,13 @@ module.exports = {
               'Verifica che Server Members Intent sia abilitato nel Developer Portal.',
           );
         });
+    }
+
+    // Foto iniziale degli inviti: senza, il primo ingresso non dice da dove arriva.
+    for (const guild of client.guilds.cache.values()) {
+      initInviteTracking(guild).catch(error => {
+        console.warn(`Tracciamento inviti non avviato per ${guild.name}: ${error.message}`);
+      });
     }
 
     // Notifiche quando gli streamer di config/live.js vanno in live (Twitch/TikTok).

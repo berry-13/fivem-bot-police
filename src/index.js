@@ -28,12 +28,20 @@ function createClient() {
       // Privilegiato: serve a /setup-gerarchia per elencare chi ha ogni ruolo.
       // Va abilitato anche nel Developer Portal (Bot -> Privileged Gateway Intents).
       GatewayIntentBits.GuildMembers,
+      // Log: voci di audit log (ban, espulsioni, ruoli, modifiche al server)
+      // e ingressi/uscite dai canali vocali. Non privilegiati.
+      GatewayIntentBits.GuildModeration,
+      GatewayIntentBits.GuildVoiceStates,
+      // Tracciamento inviti: inviteCreate/inviteDelete tengono aggiornata la foto.
+      GatewayIntentBits.GuildInvites,
       // Necessario perche' i partial sotto abbiano senso: senza questo intent
       // i messaggi diretti non arrivano proprio.
       GatewayIntentBits.DirectMessages,
     ],
-    // Servono a ricevere i DM in canali non ancora in cache.
-    partials: [Partials.Message, Partials.Channel],
+    // Message e Channel servono a ricevere i DM in canali non ancora in cache e
+    // a loggare eliminazioni di messaggi vecchi. GuildMember fa arrivare
+    // guildMemberRemove anche per chi non era in cache, cosi' l'uscita si logga.
+    partials: [Partials.Message, Partials.Channel, Partials.GuildMember],
   });
 }
 

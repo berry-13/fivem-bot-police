@@ -63,8 +63,8 @@ Nel Developer Portal, sezione Bot, vanno attivati:
 - **Server Members Intent**: senza quello `/setup-gerarchia` non riesce a
   elencare chi ha ogni ruolo.
 
-Gli altri intent usati (`Guilds`, `GuildMessages`, `DirectMessages`) non sono
-privilegiati.
+Gli altri intent usati (`Guilds`, `GuildMessages`, `DirectMessages`,
+`GuildModeration`, `GuildVoiceStates`, `GuildInvites`) non sono privilegiati.
 
 ## Script
 
@@ -93,9 +93,14 @@ src/
     tickets.js          Logica dei ticket condivisa da bottone e comandi
     live.js             Polling Twitch/TikTok/Kick e notifiche live
     live-store.js       Lista streamer su disco, gestita dai comandi /live
+    logs.js             Log del server: schede, audit log, invio sicuro
+    log-card.js         Scheda di log con i componenti V2 di Discord
+    logs-store.js       Canali di log per server (data/logs.json)
+    invites.js          Tracciamento dell'invito usato da chi entra
   config/
     tickets.js          Categorie dei ticket e nome del canale di log
     live.js             Streamer di partenza (seed del primo avvio)
+    logs.js             Tipi di log, nomi dei canali, filtri
   events/               Un file per evento del gateway
   commands/slash/       Slash command: { data, execute }
   commands/prefix/      Comandi testuali: { name, execute }
@@ -223,6 +228,67 @@ messaggio lo dice invece di promettere un archivio che non c'e'.
 il permesso Gestire i canali oppure uno dei ruoli elencati in
 `src/config/tickets.js`. Entrambi i comandi funzionano solo dentro un canale
 ticket e si rifiutano di toccare `ticket-logs`.
+
+## Log del server
+
+Ogni tipo di log ha il suo canale, cosi' chi cerca un ban non deve scorrere
+mille messaggi modificati.
+
+Ogni log e' una scheda fatta con i componenti V2 di Discord: bordo colorato
+per tipo di evento (rosso eliminazioni, giallo modifiche, verde ingressi,
+arancione uscite, rosso scuro sanzioni), avatar accanto al titolo, contenuti
+degli utenti citati, id e orario in piccolo in fondo, pulsanti per saltare al
+messaggio o al canale. La trascrizione di un'eliminazione di massa e' un file
+mostrato dentro la scheda stessa.
+
+| Tipo | Cosa registra |
+| --- | --- |
+| **Messaggi** | messaggi eliminati (con chi li ha eliminati, quando si riesce a saperlo), modificati (prima e dopo), eliminazioni di massa con trascrizione `.txt`, messaggi fissati |
+| **Membri** | ingressi con l'invito usato e chi l'ha creato (avviso per account creati da meno di 7 giorni), uscite con i ruoli che avevano e da quanto erano nel server, nickname, ruoli aggiunti e tolti con chi li ha cambiati |
+| **Moderazione** | ban e revoche, espulsioni, timeout, mute e deaf di server, disconnessioni e spostamenti in voce, azioni AutoMod, pulizie dei membri |
+| **Voce** | ingressi, uscite e cambi di canale vocale |
+| **Server** | canali, ruoli (con i permessi aggiunti e tolti), permessi dei canali, inviti, webhook, emoji, sticker, thread, eventi, regole AutoMod, bot aggiunti, impostazioni del server |
+
+Configurazione, solo amministratori:
+
+| Comando | Cosa fa |
+| --- | --- |
+| `/setup-log crea [staff]` | Crea la categoria privata **Server Log** con un canale per tipo. Il ruolo `staff`, se indicato, legge in sola lettura: scrivere, cancellare, fissare, creare thread o webhook gli viene negato anche se lo puo' fare nel resto del server (tranne agli amministratori). Rilanciarlo riapplica i permessi e ricrea solo i canali cancellati; una categoria del server con lo stesso nome non viene mai toccata. |
+| `/setup-log imposta tipo canale` | Manda un tipo di log in un canale esistente (controlla prima che il bot ci possa scrivere). |
+| `/setup-log disattiva tipo` | Spegne un tipo, o `Tutti`. I canali non vengono eliminati. |
+| `/setup-log stato` | Mostra dove va ogni tipo e quali permessi mancano. |
+
+La configurazione resta in `data/logs.json` (in Docker: volume `bot-data`).
+Nomi dei canali, filtri e soglia degli account nuovi si cambiano in
+`src/config/logs.js`.
+
+Permessi del bot:
+
+- **Visualizzare il registro attivita'**: senza questo moderazione, server,
+  ruoli e nickname restano vuoti, e un messaggio eliminato non dice chi l'ha
+  eliminato. Sono tutti letti dall'audit log, che porta autore e motivo.
+- **Gestire il server**: per sapere quale invito ha usato chi entra. Senza,
+  il log degli ingressi lo dice invece di tirare a indovinare.
+- **Gestire i canali** e **Gestire i ruoli**: solo per `/setup-log crea`.
+
+Tracciamento degli inviti: all'avvio il bot fotografa gli utilizzi di ogni
+invito e, a ogni ingresso, guarda quale e' salito. Riconosce anche l'URL
+personalizzato del server e gli inviti a utilizzi limitati che si esauriscono
+proprio con quell'ingresso. Se due persone entrano nello stesso istante con
+inviti diversi il log lo dice ("uno tra..."), e chi arriva da Scopri server o
+entra prima che la foto iniziale sia pronta risulta "sconosciuto".
+
+Scelte di comportamento:
+
+- Nessun log fa ping: menzioni di utenti e ruoli sono solo visuali.
+- I messaggi dei bot e le azioni fatte da questo bot (ticket compresi) non
+  vengono loggati, e nemmeno quello che succede nei canali di log stessi.
+- Una modifica che cambia solo l'anteprima di un link non conta come modifica.
+- Un messaggio eliminato che non era in cache (per esempio mandato prima
+  dell'ultimo riavvio) viene loggato lo stesso, dicendo che il testo non e'
+  disponibile.
+- Se un canale di log viene cancellato il bot continua a girare e lo segnala
+  in console al massimo una volta ogni dieci minuti.
 
 ## Aggiungere un comando
 
