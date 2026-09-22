@@ -36,12 +36,15 @@ afterEach(() => {
 
 function fakeChannel(id, { sendImpl, type = ChannelType.GuildText, name = id, parentId = null } = {}) {
   const inviati = [];
+  const overwrites = [];
   return {
     id,
     name,
     type,
     parentId,
     inviati,
+    overwrites,
+    permissionOverwrites: { set: async lista => overwrites.push(lista) },
     isTextBased: () => type !== ChannelType.GuildCategory,
     send: sendImpl ?? (async payload => inviati.push(payload)),
     toString: () => `<#${id}>`,
@@ -451,10 +454,13 @@ test('crea genera categoria e canali mancanti e riusa quelli gia\' configurati',
   });
   store.setChannel(GUILD_ID, 'voce', 'gia-mio');
 
-  const { creati, riusati } = await logs.createLogChannels(guild);
+  const { creati, riusati, esterni } = await logs.createLogChannels(guild);
 
-  assert.equal(riusati.length, 1);
-  assert.equal(riusati[0].tipo.value, 'voce');
+  // "gia-mio" e' fuori dalla categoria: scelto con imposta, non lo tocchiamo.
+  assert.equal(riusati.length, 0);
+  assert.equal(esterni.length, 1);
+  assert.equal(esterni[0].tipo.value, 'voce');
+  assert.equal(esistente.overwrites.length, 0);
   assert.equal(creati.length, logs.TIPI.length - 1);
   assert.equal(guild.creati[0].type, ChannelType.GuildCategory);
   for (const tipo of logs.TIPI) assert.ok(store.getChannelId(GUILD_ID, tipo));
@@ -462,6 +468,22 @@ test('crea genera categoria e canali mancanti e riusa quelli gia\' configurati',
   // Una seconda esecuzione non crea nulla di nuovo.
   const secondo = await logs.createLogChannels(guild);
   assert.equal(secondo.creati.length, 0);
+  assert.equal(secondo.riusati.length, logs.TIPI.length - 1);
+});
+
+test('rilanciare crea con un altro ruolo staff riapplica i permessi a categoria e canali', async () => {
+  const guild = fakeGuild({ permessi: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles] });
+  await logs.createLogChannels(guild, { staffRole: { id: 'staff-vecchio' } });
+
+  await logs.createLogChannels(guild, { staffRole: { id: 'staff-nuovo' } });
+
+  const gestiti = [...guild.channels.cache.values()];
+  assert.equal(gestiti.length, logs.TIPI.length + 1);
+  for (const canale of gestiti) {
+    const ultimi = canale.overwrites.at(-1).map(o => o.id);
+    assert.ok(ultimi.includes('staff-nuovo'), `${canale.name} senza il nuovo staff`);
+    assert.ok(!ultimi.includes('staff-vecchio'), `${canale.name} tiene il vecchio staff`);
+  }
 });
 
 test('crea si rifiuta con un errore leggibile se mancano i permessi', async () => {
@@ -495,4 +517,58 @@ test('durata leggibile con le due unita\' piu\' grandi', () => {
   assert.equal(logs.durata(400 * giorno), '1 anno e 1 mese');
   assert.equal(logs.durata(3 * giorno + 2 * 60 * 60 * 1000), '3 giorni e 2 ore');
   assert.equal(logs.durata(1000), 'meno di un minuto');
+});
+
+test('l\'eliminazione di massa esclude i messaggi dei bot dalla trascrizione', async () => {
+  const canale = fakeChannel('log-msg');
+  const guild = fakeGuild({ channels: [canale] });
+  store.setChannel(GUILD_ID, 'messaggi', 'log-msg');
+
+  const messaggi = new Collection([
+    ['a', fakeMessage(guild, { id: 'a', content: 'umano' })],
+    ['b', fakeMessage(guild, { id: 'b', content: 'pannello del bot', author: { id: 'bot-x', tag: 'bot', bot: true } })],
+    ['c', fakeMessage(guild, { id: 'c', content: 'da webhook', webhookId: 'wh' })],
+  ]);
+  await logs.logMessageDeleteBulk(messaggi, { id: 'generale', name: 'generale', guild });
+
+  const payload = canale.inviati[0];
+  const trascrizione = payload.files[0].attachment.toString('utf8');
+  assert.match(trascrizione, /umano/);
+  assert.doesNotMatch(trascrizione, /pannello del bot|da webhook/);
+  assert.match(testo(payload), /\*\*3\*\* messaggi eliminati\.\n2 di bot o webhook esclusi/);
+  assert.doesNotMatch(testo(payload), /<@bot-x>/);
+});
+
+test('un pin dentro un canale di log non viene loggato, la sua eliminazione si', async () => {
+  const logMsg = fakeChannel('log-msg');
+  const logServer = fakeChannel('log-server');
+  const guild = fakeGuild({ channels: [logMsg, logServer] });
+  store.setChannel(GUILD_ID, 'messaggi', 'log-msg');
+  store.setChannel(GUILD_ID, 'server', 'log-server');
+
+  await logs.logAuditEntry(
+    {
+      action: AuditLogEvent.MessagePin,
+      executorId: 'mod-1',
+      targetType: 'User',
+      targetId: 'u1',
+      extra: { channel: { id: 'log-msg' }, messageId: 'm1' },
+      changes: [],
+    },
+    guild,
+  );
+  assert.equal(logMsg.inviati.length, 0);
+
+  // Chi cancella un canale di log per nascondere qualcosa deve restare visibile.
+  await logs.logAuditEntry(
+    {
+      action: AuditLogEvent.ChannelDelete,
+      executorId: 'mod-1',
+      targetType: 'Channel',
+      targetId: 'log-msg',
+      changes: [{ key: 'name', old: 'log-messaggi' }],
+    },
+    guild,
+  );
+  assert.equal(logServer.inviati.length, 1);
 });

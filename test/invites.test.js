@@ -4,6 +4,8 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { Collection, PermissionFlagsBits } = require('discord.js');
 
+const TRACCIA_E_REGISTRO = [PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ViewAuditLog];
+
 const {
   initInviteTracking,
   onInviteCreate,
@@ -20,7 +22,7 @@ function invito(code, uses, { maxUses = 0, inviterId = 'mod-1' } = {}) {
 
 /** Un server i cui inviti si cambiano a mano tra un fetch e l'altro. */
 function fakeGuild({ inviti = [], permessi = [PermissionFlagsBits.ManageGuild], vanityURLCode = null } = {}) {
-  const stato = { inviti, vanityUses: 0, fetchCount: 0 };
+  const stato = { inviti, vanityUses: 0, fetchCount: 0, eliminatiAMano: [] };
   const guild = {
     id: 'guild-1',
     name: 'test',
@@ -34,6 +36,11 @@ function fakeGuild({ inviti = [], permessi = [PermissionFlagsBits.ManageGuild], 
       },
     },
     fetchVanityData: async () => ({ code: vanityURLCode, uses: stato.vanityUses }),
+    fetchAuditLogs: async () => ({
+      entries: new Collection(
+        stato.eliminatiAMano.map((codice, i) => [String(i), { changes: [{ key: 'code', old: codice }] }]),
+      ),
+    }),
   };
   return guild;
 }
@@ -61,11 +68,11 @@ test('riconosce l\'URL personalizzato del server', async () => {
   assert.deepEqual(risultato, { stato: 'vanity', code: 'sheriff', uses: 11 });
 });
 
-test('un invito a utilizzo singolo che sparisce con l\'ingresso viene attribuito', async () => {
-  const guild = fakeGuild({ inviti: [invito('uno', 0, { maxUses: 1 }), invito('altro', 3)] });
+test('un invito a utilizzo singolo esaurito dall\'ingresso viene attribuito', async () => {
+  const guild = fakeGuild({ inviti: [invito('uno', 0, { maxUses: 1 }), invito('altro', 3)], permessi: TRACCIA_E_REGISTRO });
   await initInviteTracking(guild);
 
-  // Discord cancella l'invito esaurito prima che arrivi guildMemberAdd.
+  // Discord cancella l'invito esaurito prima che arrivi guildMemberAdd, senza voce nel registro.
   onInviteDelete({ code: 'uno', guild });
   guild.stato.inviti = [invito('altro', 3)];
   const risultato = await trovaInvitoUsato(guild);
@@ -74,6 +81,30 @@ test('un invito a utilizzo singolo che sparisce con l\'ingresso viene attribuito
   assert.equal(risultato.invito.code, 'uno');
   assert.equal(risultato.invito.uses, 1);
   assert.equal(risultato.esaurito, true);
+});
+
+test('un invito limitato cancellato a mano non viene attribuito a chi entra', async () => {
+  const guild = fakeGuild({ inviti: [invito('uno', 0, { maxUses: 1 })], permessi: TRACCIA_E_REGISTRO });
+  await initInviteTracking(guild);
+
+  // Un moderatore lo cancella, poi entra qualcuno da Scopri server.
+  guild.stato.eliminatiAMano = ['uno'];
+  onInviteDelete({ code: 'uno', guild });
+  guild.stato.inviti = [];
+
+  assert.deepEqual(await trovaInvitoUsato(guild), { stato: 'sconosciuto' });
+});
+
+test('senza registro un invito sparito e\' solo probabile, non attribuito', async () => {
+  const guild = fakeGuild({ inviti: [invito('uno', 0, { maxUses: 1 })] });
+  await initInviteTracking(guild);
+
+  onInviteDelete({ code: 'uno', guild });
+  guild.stato.inviti = [];
+  const risultato = await trovaInvitoUsato(guild);
+
+  assert.equal(risultato.stato, 'probabile');
+  assert.equal(risultato.invito.code, 'uno');
 });
 
 test('un invito creato dopo l\'avvio viene tracciato grazie a inviteCreate', async () => {

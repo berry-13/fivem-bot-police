@@ -1,6 +1,6 @@
 'use strict';
 
-const { PermissionFlagsBits } = require('discord.js');
+const { AuditLogEvent, PermissionFlagsBits } = require('discord.js');
 
 /**
  * Traccia quale invito ha usato chi entra. Discord non lo dice: si tiene una
@@ -23,7 +23,9 @@ const vanity = new Map(); // guildId -> utilizzi del vanity, o null
 const eliminati = new Map(); // guildId -> Map(code -> { ...invito, eliminatoIl })
 const code = new Map(); // guildId -> promise dell'ultimo confronto in coda
 
-const FINESTRA_ELIMINATI_MS = 60_000;
+// Un invito esaurito da un ingresso viene cancellato un attimo prima che
+// arrivi guildMemberAdd: oltre questa finestra non e' piu' un candidato.
+const FINESTRA_ELIMINATI_MS = 15_000;
 
 function puoTracciare(guild) {
   return Boolean(guild?.members?.me?.permissions?.has(PermissionFlagsBits.ManageGuild));
@@ -77,8 +79,8 @@ function onInviteDelete(invite) {
   if (!precedente) return;
   foto.get(guildId).delete(invite.code);
 
-  // Lo teniamo un minuto: se e' stato cancellato perche' esaurito da un
-  // ingresso, quell'ingresso arriva subito dopo e deve poterlo trovare.
+  // Lo teniamo per FINESTRA_ELIMINATI_MS: se e' stato cancellato perche'
+  // esaurito da un ingresso, quell'ingresso arriva subito dopo e deve trovarlo.
   if (!eliminati.has(guildId)) eliminati.set(guildId, new Map());
   eliminati.get(guildId).set(invite.code, { ...precedente, eliminatoIl: Date.now() });
 }
@@ -90,6 +92,26 @@ function utilizziTotali(mappa, inviterId) {
     if (invito.inviterId === inviterId) totale += invito.uses;
   }
   return totale;
+}
+
+/**
+ * Codici di inviti cancellati a mano di recente. Un invito esaurito lo
+ * cancella Discord senza voce nel registro, uno cancellato da qualcuno la ha:
+ * e' l'unico modo per distinguerli. null se il registro non e' leggibile.
+ */
+async function codiciEliminatiAMano(guild) {
+  if (!guild.members.me?.permissions?.has(PermissionFlagsBits.ViewAuditLog)) return null;
+  try {
+    const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.InviteDelete, limit: 10 });
+    const codici = new Set();
+    for (const entry of logs.entries.values()) {
+      const codice = entry.changes?.find(c => c.key === 'code')?.old;
+      if (codice) codici.add(codice);
+    }
+    return codici;
+  } catch {
+    return null;
+  }
 }
 
 async function confronta(guild) {
@@ -134,10 +156,20 @@ async function confronta(guild) {
     if (dopo.has(invito.code)) continue;
     if (invito.maxUses > 0 && invito.uses + 1 >= invito.maxUses) candidati.set(invito.code, invito);
   }
+  if (candidati.size === 0) return { stato: 'sconosciuto' };
+
+  const aMano = await codiciEliminatiAMano(guild);
+  if (aMano) {
+    for (const codice of aMano) candidati.delete(codice);
+  }
   if (candidati.size === 1) {
     const [invito] = candidati.values();
     recenti.delete(invito.code);
-    return { stato: 'invito', invito: { ...invito, uses: invito.uses + 1 }, esaurito: true };
+    const usato = { ...invito, uses: invito.uses + 1 };
+    // Senza registro non possiamo escludere che l'abbia cancellato qualcuno:
+    // lo diciamo come ipotesi, senza attribuire l'ingresso a chi l'ha creato.
+    if (!aMano) return { stato: 'probabile', invito: usato };
+    return { stato: 'invito', invito: usato, esaurito: true };
   }
 
   return { stato: 'sconosciuto' };

@@ -101,7 +101,10 @@ async function crea(interaction, guild) {
 
   const righe = [
     ...risultato.creati.map(({ tipo, channel }) => `**${tipo.label}**: ${channel} (nuovo)`),
-    ...risultato.riusati.map(({ tipo, channel }) => `**${tipo.label}**: ${channel} (gia' presente)`),
+    ...risultato.riusati.map(({ tipo, channel }) => `**${tipo.label}**: ${channel} (gia' presente, permessi aggiornati)`),
+    ...risultato.esterni.map(
+      ({ tipo, channel }) => `**${tipo.label}**: ${channel} (scelto con imposta, permessi non toccati)`,
+    ),
   ];
 
   await safeInteractionReply(

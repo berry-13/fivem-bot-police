@@ -196,7 +196,11 @@ async function createLogChannels(guild, { staffRole } = {}) {
   let categoria = guild.channels.cache.find(
     c => c.type === ChannelType.GuildCategory && c.name === logConfig.categoria,
   );
-  if (!categoria) {
+  if (categoria) {
+    // Rilanciare crea con un altro ruolo staff (o senza) deve togliere
+    // l'accesso a quello vecchio, non solo darlo al nuovo.
+    await categoria.permissionOverwrites.set(permissionOverwrites, 'Setup canali di log');
+  } else {
     categoria = await guild.channels.create({
       name: logConfig.categoria,
       type: ChannelType.GuildCategory,
@@ -207,6 +211,9 @@ async function createLogChannels(guild, { staffRole } = {}) {
 
   const creati = [];
   const riusati = [];
+  // Canali scelti a mano con /setup-log imposta: i loro permessi li decide
+  // chi li ha scelti, crea non li tocca.
+  const esterni = [];
 
   for (const tipo of logConfig.tipi) {
     const configurato = store.getChannelId(guild.id, tipo.value);
@@ -218,7 +225,10 @@ async function createLogChannels(guild, { staffRole } = {}) {
       );
     }
 
-    if (channel) {
+    if (channel && channel.parentId !== categoria.id) {
+      esterni.push({ tipo, channel });
+    } else if (channel) {
+      await channel.permissionOverwrites.set(permissionOverwrites, 'Setup canali di log');
       riusati.push({ tipo, channel });
     } else {
       channel = await guild.channels.create({
@@ -235,7 +245,7 @@ async function createLogChannels(guild, { staffRole } = {}) {
     store.setChannel(guild.id, tipo.value, channel.id);
   }
 
-  return { categoria, creati, riusati };
+  return { categoria, creati, riusati, esterni };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -253,11 +263,16 @@ function descriviAllegati(message) {
     .join('\n');
 }
 
-function deveIgnorareMessaggio(message) {
-  if (!message.guild) return true;
+/** Filtri sul messaggio in se', validi sia per un'eliminazione sia per quelle di massa. */
+function isMessaggioFiltrato(message) {
   if (message.system) return true;
   if (logConfig.ignoraBot && message.author?.bot) return true;
-  if (message.webhookId) return true;
+  return Boolean(message.webhookId);
+}
+
+function deveIgnorareMessaggio(message) {
+  if (!message.guild) return true;
+  if (isMessaggioFiltrato(message)) return true;
   return isIgnoredChannel(message.guild.id, message.channelId);
 }
 
@@ -421,7 +436,11 @@ function buildBulkTranscript(messages) {
 }
 
 function buildBulkDeleteCard(messages, channel) {
-  const lista = [...messages.values()];
+  const totale = messages.size;
+  // Messaggi di bot e webhook fuori dalla trascrizione, come nelle eliminazioni
+  // singole. I non in cache non si possono filtrare: restano solo nel conteggio.
+  const lista = [...messages.values()].filter(m => m.partial || !isMessaggioFiltrato(m));
+  const filtrati = totale - lista.length;
   const inCache = lista.filter(m => !m.partial);
   const trascrizione = buildBulkTranscript(lista);
 
@@ -443,7 +462,8 @@ function buildBulkDeleteCard(messages, channel) {
     titolo: 'Eliminazione di massa',
     sottotitolo: `in <#${channel.id}>`,
     corpo:
-      `**${lista.length}** messaggi eliminati.\n` +
+      `**${totale}** messaggi eliminati.\n` +
+      (filtrati > 0 ? `${filtrati} di bot o webhook esclusi.\n` : '') +
       (inCache.length > 0
         ? `${inCache.length} erano in cache: trascrizione qui sotto.`
         : 'Nessuno era in cache: contenuto non disponibile.'),
@@ -476,6 +496,8 @@ function descriviInvito(risultato) {
       const esaurito = risultato.esaurito ? ', ora esaurito' : '';
       return `\`discord.gg/${invito.code}\` (${invito.uses}${limite} utilizzi${esaurito})`;
     }
+    case 'probabile':
+      return `Probabilmente \`discord.gg/${risultato.invito.code}\`, esaurito con questo ingresso (non confermato: serve il permesso Visualizzare il registro)`;
     case 'vanity':
       return `URL personalizzato \`discord.gg/${risultato.code}\` (${risultato.uses} utilizzi)`;
     case 'ambiguo':
@@ -976,6 +998,11 @@ async function resolveExecutor(entry, guild) {
 async function logAuditEntry(entry, guild) {
   if (!guild) return;
   if (logConfig.ignoraAzioniDelBot && entry.executorId && entry.executorId === guild.client?.user?.id) return;
+
+  // Pin, AutoMod e simili dentro un canale di log sono rumore generato dai log
+  // stessi. Le modifiche ai canali di log (eliminati, permessi cambiati) invece
+  // restano: sono proprio quello che fa chi vuole nascondere qualcosa.
+  if (isIgnoredChannel(guild.id, entry.extra?.channel?.id)) return;
 
   const voci = instradaVoceAudit(entry).filter(v => isEnabled(guild.id, v.tipo));
   if (voci.length === 0) return;
