@@ -121,9 +121,48 @@ test('interactionCreate ignora le interazioni che non sono comandi', async () =>
   });
   const interaction = {
     isChatInputCommand: () => false,
+    isAutocomplete: () => false,
     isStringSelectMenu: () => false,
     isButton: () => false,
   };
 
+  await assert.doesNotReject(() => interactionCreate.execute(interaction, client));
+});
+
+test('interactionCreate instrada le autocomplete al comando giusto', async () => {
+  const suggeriti = [];
+  const client = clientConComando('live', () => {
+    throw new Error('execute non deve essere chiamato da una autocomplete');
+  });
+  client.slashCommands.get('live').autocomplete = async i => {
+    suggeriti.push(i.options.getFocused());
+  };
+
+  const interaction = {
+    isChatInputCommand: () => false,
+    isAutocomplete: () => true,
+    commandName: 'live',
+    options: { getFocused: () => 'salvi' },
+  };
+
+  await interactionCreate.execute(interaction, client);
+
+  assert.deepEqual(suggeriti, ['salvi']);
+});
+
+test('interactionCreate assorbe un errore nell\'autocomplete', async () => {
+  const client = clientConComando('live', () => {});
+  client.slashCommands.get('live').autocomplete = async () => {
+    throw new Error('boom');
+  };
+
+  const interaction = {
+    isChatInputCommand: () => false,
+    isAutocomplete: () => true,
+    commandName: 'live',
+    options: { getFocused: () => '' },
+  };
+
+  // Un throw qui diventerebbe una unhandled rejection: l'handler deve reggerlo.
   await assert.doesNotReject(() => interactionCreate.execute(interaction, client));
 });

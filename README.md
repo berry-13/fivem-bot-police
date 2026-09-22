@@ -45,10 +45,11 @@ npm start
 | `GUILD_ID` | no | Se valorizzato, registra i comandi solo in quel server, con effetto immediato. Se vuoto la registrazione e' globale e puo' richiedere fino a un'ora. |
 | `COMMAND_PREFIX` | no | Prefisso dei comandi testuali, default `!`. |
 | `LIVE_CHANNEL_ID` | per le notifiche live | Id del canale Discord dove mandare "X e' in live". |
-| `LIVE_ROLE_ID` | no | Chi pingare in ogni notifica live: id di un ruolo, oppure `everyone` (o l'id del server) per `@everyone`. Vuoto = nessun ping. |
+| `LIVE_ROLE_ID` | no | Chi pingare in ogni notifica live. **Vuoto = `@everyone`** (default). Metti l'id di un ruolo per pingare solo quello, oppure `none` per non pingare nessuno. |
 | `TWITCH_CLIENT_ID` | per Twitch | Client ID di un'app su [dev.twitch.tv](https://dev.twitch.tv/console). |
 | `TWITCH_CLIENT_SECRET` | per Twitch | Client Secret della stessa app. |
 | `LIVE_POLL_INTERVAL_MS` | no | Intervallo di controllo (default `60000`, minimo `15000`). |
+| `LIVE_STORE_PATH` | no | Dove salvare la lista streamer modificata con `/live` (default `data/live.json`). |
 
 Se manca una variabile obbligatoria il processo esce subito con un messaggio
 chiaro, invece di fallire piu' avanti con un errore delle API di Discord.
@@ -90,14 +91,15 @@ src/
     loaders.js          Caricamento e validazione di comandi ed eventi
     safe-reply.js       Risposte che non propagano mai un rejection
     tickets.js          Logica dei ticket condivisa da bottone e comandi
-    live.js             Polling Twitch/TikTok e notifiche live
+    live.js             Polling Twitch/TikTok/Kick e notifiche live
+    live-store.js       Lista streamer su disco, gestita dai comandi /live
     logs.js             Log del server: schede, audit log, invio sicuro
     log-card.js         Scheda di log con i componenti V2 di Discord
     logs-store.js       Canali di log per server (data/logs.json)
     invites.js          Tracciamento dell'invito usato da chi entra
   config/
     tickets.js          Categorie dei ticket e nome del canale di log
-    live.js             Lista streamer da monitorare
+    live.js             Streamer di partenza (seed del primo avvio)
     logs.js             Tipi di log, nomi dei canali, filtri
   events/               Un file per evento del gateway
   commands/slash/       Slash command: { data, execute }
@@ -105,12 +107,34 @@ src/
 test/                   Test con node:test, nessuna dipendenza esterna
 ```
 
-## Notifiche live (Twitch / TikTok)
+## Notifiche live (Twitch / TikTok / Kick)
 
-All'avvio il bot controlla periodicamente se gli streamer in `src/config/live.js`
-sono in live e, al passaggio da offline a online, manda un embed nel canale
-indicato da `LIVE_CHANNEL_ID`.
+Il bot controlla periodicamente se gli account monitorati sono in live e, al
+passaggio da offline a online, manda un embed nel canale indicato da
+`LIVE_CHANNEL_ID`.
 
+La lista si gestisce da Discord con `/live` (solo amministratori, e solo nel
+server che contiene il canale di `LIVE_CHANNEL_ID`):
+
+| Comando | Cosa fa |
+|---|---|
+| `/live aggiungi piattaforma: account: [nome:]` | Aggiunge un account. In `account` va lo username, l'`@handle` o il link del **canale** (`twitch.tv/nome`, `tiktok.com/@nome`, `kick.com/nome`): un link di un'altra piattaforma, o che punta a un video, a una clip o a una sezione del sito, viene rifiutato. `nome` e' facoltativo: e' il nome mostrato nella notifica, default lo username. |
+| `/live rimuovi account:` | Toglie un account. Il campo suggerisce quelli in lista; scrivendo a mano serve il valore esatto (username, link o `piattaforma:username`, es. `kick:salvinosalvo`), perche' un pezzo di nome non cancelli l'account sbagliato. |
+| `/live lista` | Mostra gli account monitorati, divisi per piattaforma. |
+
+Le modifiche valgono subito: il monitor rilegge la lista a ogni giro di
+controllo, non serve riavviare il bot ne' rieseguire `npm run deploy`. La lista
+vive in `data/live.json` (percorso cambiabile con `LIVE_STORE_PATH`), quindi
+sopravvive ai riavvii e agli aggiornamenti dell'immagine Docker se `data/` e'
+su un volume.
+
+Se `LIVE_CHANNEL_ID` e' valorizzato ma il bot non riesce a risalire al server di
+quel canale (id sbagliato, canale cancellato, permessi mancanti), `/live`
+rifiuta di lavorare e lo dice: meglio un comando fermo che una lista modificabile
+da un server qualsiasi mentre il controllo non e' verificabile.
+
+`src/config/live.js` e' solo il punto di partenza: viene copiato in
+`data/live.json` al primo avvio e da lì in poi comandano i comandi `/live`.
 Streamer preconfigurati:
 
 | Piattaforma | Account |
@@ -120,6 +144,7 @@ Streamer preconfigurati:
 | Twitch | [ydiablo93](https://www.twitch.tv/ydiablo93) |
 | Twitch | [bigtaurus94](https://www.twitch.tv/bigtaurus94) |
 | Twitch | [s4k3_tv](https://www.twitch.tv/s4k3_tv) |
+| Kick | [salvinosalvo](https://kick.com/salvinosalvo) |
 
 Setup minimo:
 
@@ -128,22 +153,36 @@ Setup minimo:
    (tipo "Application integration" va bene) e metti Client ID e Secret in
    `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`.
 3. TikTok non richiede credenziali: il bot interroga gli endpoint pubblici.
-4. Opzionale: `LIVE_ROLE_ID` per pingare a ogni annuncio. Usa l'id di un ruolo,
-   oppure `everyone` (o l'id del server) per `@everyone`. Il bot deve avere il
-   permesso "Menziona @everyone, @here e tutti i ruoli" se usi `@everyone`.
+4. Ogni annuncio pinga **`@everyone`**: e' il default, non serve configurare
+   niente. Il bot deve avere il permesso "Menziona @everyone, @here e tutti i
+   ruoli" nel canale, altrimenti Discord rifiuta il messaggio (errore nei log).
+   Per pingare solo un ruolo metti il suo id in `LIVE_ROLE_ID`; per non pingare
+   nessuno metti `LIVE_ROLE_ID=none`.
 
 Comportamento:
 
 - Al **primo** controllo dopo un avvio/riavvio non manda nulla: registra solo lo
   stato attuale, cosi' un bot che riparte a meta' live non risparma il canale.
+  Stesso trattamento per un account appena aggiunto con `/live aggiungi`: se e'
+  già in live in quel momento non viene annunciato, il primo giro serve solo a
+  fotografare lo stato.
 - Notifica solo sul passaggio **offline -> live**. Finche' resta in live non
   ripete il messaggio.
+- Ogni notifica pinga `@everyone` (default), con `allowedMentions` espliciti: il
+  ping arriva davvero, non resta solo scritto nel messaggio.
 - Errori di rete o API vengono loggati e ritentati al giro successivo; il
-  processo non cade.
+  processo non cade. Una richiesta fallita non vale come "offline", cosi' quando
+  la rete torna non parte un secondo annuncio della stessa live.
+- Twitch chiede tutti i canali in una sola chiamata; TikTok e Kick vanno
+  interrogati uno per uno, a gruppi di 4 e con 10 secondi di timeout ciascuno.
+  Le tre piattaforme partono insieme, cosi' una lenta non ruba il tempo alle
+  altre. Se il giro sfora l'80% dell'intervallo, gli account rimasti passano al
+  giro successivo (warning in console) e il giro dopo riparte da loro: nessuno
+  resta indietro.
 - Senza `LIVE_CHANNEL_ID` il monitor resta spento (warning in console).
-- Senza credenziali Twitch i soli account TikTok restano attivi.
-
-Per aggiungere o togliere streamer modifica `src/config/live.js` e riavvia.
+- Senza credenziali Twitch gli account TikTok e Kick restano attivi.
+- Con la lista vuota il monitor resta acceso e in attesa: appena arriva il primo
+  `/live aggiungi` ricomincia a controllare.
 
 ## Gerarchia reparto
 

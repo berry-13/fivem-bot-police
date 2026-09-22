@@ -2,12 +2,18 @@
 
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const {
   streamerKey,
   createTwitchAuth,
   fetchTwitchLive,
   parseTikTokRoomPayload,
+  parseKickChannelPayload,
+  fetchKickLive,
+  motivoErrore,
   resolveLiveMention,
   buildLiveNotification,
   transitionAction,
@@ -50,6 +56,18 @@ test('transitionAction al primo giro fa solo seed, senza notify', () => {
   assert.equal(transitionAction(previous, 'twitch:a', true, meta), 'notify');
 });
 
+test('motivoErrore risale la catena delle cause senza ripetere i messaggi', () => {
+  const conCausa = new Error('fetch failed');
+  conCausa.cause = new Error('connect ECONNRESET 104.18.32.7:443');
+  assert.equal(motivoErrore(conCausa), 'fetch failed; connect ECONNRESET 104.18.32.7:443');
+
+  // Due fallimenti con lo stesso messaggio non devono stampare "x; x".
+  const doppio = new Error('fetch failed', { cause: new Error('fetch failed') });
+  assert.equal(motivoErrore(doppio), 'fetch failed');
+
+  assert.equal(motivoErrore(new Error('boh')), 'boh');
+});
+
 test('parseTikTokRoomPayload riconosce status 2 come live', () => {
   const live = parseTikTokRoomPayload(
     { data: { liveRoom: { status: 2, title: 'Ciao', coverUrl: 'https://img/x' } } },
@@ -61,6 +79,44 @@ test('parseTikTokRoomPayload riconosce status 2 come live', () => {
 
   const offline = parseTikTokRoomPayload({ data: { liveRoom: { status: 4 } } }, 'xx_cicci_xx');
   assert.equal(offline.live, false);
+});
+
+test('parseKickChannelPayload riconosce livestream come live', () => {
+  const live = parseKickChannelPayload(
+    {
+      livestream: {
+        session_title: 'Ciao Kick',
+        viewer_count: 7,
+        thumbnail: { url: 'https://img/kick.jpg' },
+      },
+      user: { profile_pic: 'https://img/avatar.jpg' },
+    },
+    'salvinosalvo',
+  );
+  assert.equal(live.live, true);
+  assert.equal(live.title, 'Ciao Kick');
+  assert.equal(live.viewerCount, 7);
+  assert.equal(live.thumbnailUrl, 'https://img/kick.jpg');
+  assert.equal(live.profileImageUrl, 'https://img/avatar.jpg');
+  assert.equal(live.url, 'https://kick.com/salvinosalvo');
+
+  const offline = parseKickChannelPayload({ livestream: null }, 'salvinosalvo');
+  assert.equal(offline.live, false);
+});
+
+test('fetchKickLive rilancia l\'errore su risposta HTTP non ok (stato sconosciuto, non offline)', async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 503,
+    async text() {
+      return 'service unavailable';
+    },
+  });
+
+  await assert.rejects(
+    () => fetchKickLive('salvinosalvo', { fetchImpl }),
+    /Kick channel HTTP 503/,
+  );
 });
 
 test('createTwitchAuth cache il token e lo rinnova se invalido', async () => {
@@ -206,6 +262,19 @@ test('buildLiveNotification TikTok senza ruolo non ha content', () => {
   assert.equal(payload.content, undefined);
   assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.equal(payload.embeds[0].data.color, 0x010101);
+});
+
+test('buildLiveNotification Kick senza ruolo non ha content', () => {
+  const payload = buildLiveNotification({
+    platform: 'kick',
+    displayName: 'SalvinoSalvo',
+    info: { url: 'https://kick.com/salvinosalvo' },
+  });
+
+  assert.equal(payload.content, undefined);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
+  assert.match(payload.embeds[0].data.title, /Kick/);
+  assert.equal(payload.embeds[0].data.color, 0x53fc18);
 });
 
 test('startLiveMonitor senza LIVE_CHANNEL_ID non parte', () => {
@@ -354,4 +423,979 @@ test('startLiveMonitor notifica solo al passaggio offline -> live', async () => 
   assert.equal(inviati.length, 2);
 
   monitor.stop();
+});
+
+test('startLiveMonitor Kick: un errore HTTP transitorio non forza offline ne\' causa falsi notify', async () => {
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickState = 'live';
+  const fetchImpl = async () => {
+    if (kickState === 'error') {
+      return { ok: false, status: 500, async text() { return 'boom'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return kickState === 'live'
+          ? { livestream: { session_title: 'In live su Kick', viewer_count: 3 }, user: {} }
+          : { livestream: null };
+      },
+    };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  // Seed: gia' live, nessun notify.
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Errore transitorio mentre e' ancora live: stato preservato, nessun notify.
+  kickState = 'error';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Ancora live dopo l'errore: se lo stato fosse stato resettato a offline
+  // dall'errore precedente, qui scatterebbe un falso notify offline->live.
+  kickState = 'live';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Va davvero offline.
+  kickState = 'offline';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Un altro errore transitorio mentre e' offline: stato preservato.
+  kickState = 'error';
+  await monitor._tick();
+  assert.equal(inviati.length, 0);
+
+  // Torna live per davvero: notify, perche' lo stato offline non era stato
+  // corrotto dall'errore transitorio.
+  kickState = 'live';
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+  assert.match(inviati[0].embeds[0].data.title, /Kick/);
+
+  monitor.stop();
+});
+
+test('startLiveMonitor Kick: un invio Discord fallito viene ritentato al giro successivo', async () => {
+  const inviati = [];
+  let sendShouldFail = true;
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      if (sendShouldFail) {
+        throw new Error('Discord API down');
+      }
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  await monitor._tick(); // seed offline
+  assert.equal(inviati.length, 0);
+
+  kickLive = true;
+  await monitor._tick(); // offline -> live, ma l'invio fallisce
+  assert.equal(inviati.length, 0);
+
+  // L'invio fallito non deve aver marcato lo stream come "gia' notificato":
+  // al giro successivo, ancora live, deve ritentare l'invio.
+  sendShouldFail = false;
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
+  // Da qui in poi niente altri invii per lo stesso stream.
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
+  monitor.stop();
+});
+
+test('startLiveMonitor Twitch: un invio Discord fallito viene ritentato al giro successivo', async () => {
+  const inviati = [];
+  let sendShouldFail = true;
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      if (sendShouldFail) {
+        throw new Error('Discord API down');
+      }
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let twitchPayload = { data: [] };
+  const fetchImpl = async url => {
+    const u = String(url);
+
+    if (u.includes('oauth2/token')) {
+      return { ok: true, async json() { return { access_token: 't', expires_in: 3600 }; } };
+    }
+
+    if (u.includes('helix/streams')) {
+      return { ok: true, status: 200, async json() { return twitchPayload; } };
+    }
+
+    if (u.includes('helix/users')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { data: [{ login: 'salvinosalvo', display_name: 'SalvinoSalvo' }] };
+        },
+      };
+    }
+
+    return { ok: false, status: 404, async text() { return ''; }, async json() { return {}; } };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'twitch', id: 'salvinosalvo', displayName: 'SalvinoSalvo' }],
+    twitchClientId: 'cid',
+    twitchClientSecret: 'sec',
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  await monitor._tick(); // seed offline
+  assert.equal(inviati.length, 0);
+
+  twitchPayload = {
+    data: [
+      {
+        user_login: 'salvinosalvo',
+        user_name: 'SalvinoSalvo',
+        title: 'Live',
+        game_name: 'Just Chatting',
+        viewer_count: 3,
+        thumbnail_url: 'https://x/{width}x{height}.jpg',
+      },
+    ],
+  };
+  await monitor._tick(); // offline -> live, ma l'invio fallisce
+  assert.equal(inviati.length, 0);
+
+  // L'invio fallito non deve aver marcato lo stream come "gia' notificato":
+  // come gia' fatto da Kick, al giro successivo, ancora live, si ritenta.
+  sendShouldFail = false;
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
+  await monitor._tick();
+  assert.equal(inviati.length, 1);
+
+  monitor.stop();
+});
+
+test('startLiveMonitor rilegge la lista dallo store a ogni giro', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-monitor-'));
+  const storePath = path.join(tmpDir, 'live.json');
+
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  // Kick non richiede credenziali: l'account interrogato si legge dall'url.
+  const inLive = new Set();
+  const fetchImpl = async url => {
+    const username = String(url).match(/channels\/([^/?]+)/)?.[1];
+    return {
+      ok: true,
+      async json() {
+        return inLive.has(username)
+          ? { livestream: { session_title: `Live di ${username}`, viewer_count: 1 }, user: {} }
+          : { livestream: null };
+      },
+    };
+  };
+
+  scrivi([{ platform: 'kick', id: 'primo-canale' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline del solo account in lista
+    assert.deepEqual([...monitor._previous.keys()], ['kick:primo-canale']);
+
+    // /live aggiungi mentre il bot e' acceso: il giro dopo lo monitora, e il
+    // primo giro per lui e' solo seed (niente annuncio di una live in corso).
+    inLive.add('secondo-canale');
+    scrivi([{ platform: 'kick', id: 'primo-canale' }, { platform: 'kick', id: 'secondo-canale' }]);
+    await monitor._tick();
+    assert.equal(inviati.length, 0);
+    assert.deepEqual([...monitor._previous.keys()].sort(), ['kick:primo-canale', 'kick:secondo-canale']);
+
+    // Passaggio offline -> live rilevato senza riavvio.
+    inLive.delete('secondo-canale');
+    await monitor._tick();
+    inLive.add('secondo-canale');
+    await monitor._tick();
+    assert.equal(inviati.length, 1);
+    assert.match(inviati[0].embeds[0].data.title, /Kick/);
+
+    // /live rimuovi: niente piu' controlli e stato ripulito.
+    scrivi([{ platform: 'kick', id: 'primo-canale' }]);
+    await monitor._tick();
+    assert.deepEqual([...monitor._previous.keys()], ['kick:primo-canale']);
+    assert.deepEqual([...monitor._meta.seeded], ['kick:primo-canale']);
+    assert.equal(inviati.length, 1);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('startLiveMonitor parte anche con la lista vuota, in attesa di /live aggiungi', () => {
+  const monitor = startLiveMonitor(
+    { channels: { cache: new Map() } },
+    { channelId: 'chan-1', streamers: [], setIntervalFn: () => ({ unref() {} }), clearIntervalFn: () => {} },
+  );
+
+  assert.equal(monitor.running, true);
+  monitor.stop();
+});
+
+test('startLiveMonitor non annuncia un account rimosso mentre il giro era in corso', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-race-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickLive = false;
+  let rimuoviDurante = false;
+  const fetchImpl = async () => {
+    // La rimozione arriva mentre il tick e' appeso su questa richiesta: e' il
+    // caso in cui il tick lavora ancora sulla lista vecchia.
+    if (rimuoviDurante) scrivi([]);
+    return {
+      ok: true,
+      async json() {
+        return kickLive
+          ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+          : { livestream: null };
+      },
+    };
+  };
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline
+    assert.equal(inviati.length, 0);
+
+    kickLive = true;
+    rimuoviDurante = true;
+    await monitor._tick();
+
+    // Offline -> live, ma l'account non e' piu' in lista: niente annuncio.
+    assert.equal(inviati.length, 0);
+
+    // E lo stato del rimosso non resta appeso.
+    rimuoviDurante = false;
+    await monitor._tick();
+    assert.deepEqual([...monitor._previous.keys()], []);
+    assert.equal(inviati.length, 0);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('monitor.forget rimette a zero un account rimosso e riaggiunto', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-forget-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: {
+      cache: { get: id => (id === 'chan-1' ? channel : undefined) },
+      fetch: async () => channel,
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed: offline
+    assert.equal(monitor._previous.get('kick:salvinosalvo'), false);
+
+    // Rimosso e riaggiunto tra due giri (es. per cambiare il nome mostrato):
+    // la chiave e' la stessa, quindi pruneState non vede il buco. Senza forget
+    // il nuovo ingresso eredita "offline" e, essendo già in live, verrebbe
+    // annunciato al giro dopo.
+    scrivi([{ platform: 'kick', id: 'salvinosalvo', displayName: 'Salvino' }]);
+    monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
+    kickLive = true;
+
+    await monitor._tick();
+    assert.equal(inviati.length, 0);
+    assert.equal(monitor._previous.get('kick:salvinosalvo'), true);
+
+    // Da qui in poi funziona come un account nuovo: annuncia solo il prossimo
+    // passaggio offline -> live.
+    kickLive = false;
+    await monitor._tick();
+    kickLive = true;
+    await monitor._tick();
+    assert.equal(inviati.length, 1);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('startLiveMonitor non annuncia se la rimozione arriva mentre risolve il canale', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-race2-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+
+  let rimuoviDuranteFetchCanale = false;
+  const client = {
+    channels: {
+      // Canale fuori cache: ogni giro passa dalla fetch, che qui e' la finestra
+      // in cui /live rimuovi puo' completare.
+      cache: { get: () => undefined },
+      fetch: async () => {
+        if (rimuoviDuranteFetchCanale) scrivi([]);
+        return channel;
+      },
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline
+
+    kickLive = true;
+    rimuoviDuranteFetchCanale = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 0);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('startLiveMonitor interroga i provider a lotti, senza fila indiana', async () => {
+  const channel = { isTextBased: () => true, send: async () => {} };
+  const client = {
+    channels: {
+      cache: { get: () => channel },
+      fetch: async () => channel,
+    },
+  };
+
+  let inVolo = 0;
+  let massimoInVolo = 0;
+  let completate = 0;
+
+  // Ogni richiesta resta appesa un giro di event loop: se il monitor lavorasse
+  // in fila indiana il massimo in volo sarebbe 1, e con 12 account lenti un
+  // giro durerebbe 12 timeout invece di 3 lotti.
+  const fetchImpl = async () => {
+    inVolo += 1;
+    massimoInVolo = Math.max(massimoInVolo, inVolo);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    inVolo -= 1;
+    completate += 1;
+    return { ok: true, async json() { return { livestream: null }; } };
+  };
+
+  const streamers = Array.from({ length: 12 }, (_, i) => ({
+    platform: 'kick',
+    id: `canale-${String(i).padStart(2, '0')}`,
+  }));
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+
+    assert.equal(completate, 12);
+    assert.ok(massimoInVolo > 1, `atteso piu' di una richiesta in volo, viste ${massimoInVolo}`);
+    // E il tetto va rispettato: niente 12 richieste tutte insieme.
+    assert.ok(massimoInVolo <= 4, `atteso al massimo 4 richieste in volo, viste ${massimoInVolo}`);
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('fetchTikTokLive propaga i guasti invece di dire "offline"', async () => {
+  const { fetchTikTokLive } = require('../src/lib/live');
+
+  // Timeout su entrambe le strade: stato sconosciuto, non offline. Leggerlo
+  // come offline farebbe scattare un secondo annuncio della stessa live appena
+  // la rete torna.
+  await assert.rejects(
+    () =>
+      fetchTikTokLive('xx_cicci_xx', {
+        fetchImpl: async () => {
+          const error = new Error('The operation was aborted due to timeout');
+          error.name = 'TimeoutError';
+          throw error;
+        },
+      }),
+    /TikTok non raggiungibile/,
+  );
+
+  // Anche un HTTP fallito sulla pagina di fallback e' stato sconosciuto.
+  await assert.rejects(
+    () =>
+      fetchTikTokLive('xx_cicci_xx', {
+        fetchImpl: async url =>
+          String(url).includes('api-live')
+            ? { ok: false, status: 429, async json() { return {}; } }
+            : { ok: false, status: 503, async text() { return ''; } },
+      }),
+    /TikTok non raggiungibile/,
+  );
+
+  // Risposta valida e non live: quella si' e' un "offline" affidabile.
+  const spento = await fetchTikTokLive('xx_cicci_xx', {
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return { data: { liveRoom: { status: 4 } } };
+      },
+    }),
+  });
+  assert.deepEqual(spento, { live: false });
+});
+
+test('startLiveMonitor rimanda al giro dopo gli account fuori budget, senza saltarli', async () => {
+  const channel = { isTextBased: () => true, send: async () => {} };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  const interrogati = [];
+  // Ogni richiesta "costa" abbastanza da sfondare il budget del giro
+  // (pollIntervalMs 15s -> budget 12s, ma il minimo e' 10s): usiamo un orologio
+  // finto avanzando il tempo dentro la fetch.
+  let adesso = Date.now();
+  const originalNow = Date.now;
+  Date.now = () => adesso;
+
+  const fetchImpl = async url => {
+    interrogati.push(String(url).match(/channels\/([^/?]+)/)[1]);
+    adesso += 6_000;
+    return { ok: true, async json() { return { livestream: null }; } };
+  };
+
+  const streamers = Array.from({ length: 8 }, (_, i) => ({
+    platform: 'kick',
+    id: `canale-${i}`,
+  }));
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+    const primoGiro = [...interrogati];
+    assert.ok(primoGiro.length < 8, `atteso un giro incompleto, fatti ${primoGiro.length}`);
+
+    interrogati.length = 0;
+    await monitor._tick();
+
+    // Il giro dopo riparte da dove si era fermato: nessun account resta indietro
+    // per sempre.
+    assert.equal(interrogati[0], `canale-${primoGiro.length}`);
+  } finally {
+    Date.now = originalNow;
+    monitor.stop();
+  }
+});
+
+test('forget annulla anche un annuncio già deciso da un giro in corso', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelp-live-gen-'));
+  const storePath = path.join(tmpDir, 'live.json');
+  const scrivi = streamers =>
+    fs.writeFileSync(storePath, JSON.stringify({ streamers }, null, 2), 'utf8');
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+
+  // Il fake del canale deve poter chiamare il monitor, che nasce dopo: lo
+  // teniamo in un contenitore invece di una variabile riassegnata.
+  const attivo = { monitor: null };
+  let rimuoviERiaggiungi = false;
+  const client = {
+    channels: {
+      cache: { get: () => undefined },
+      fetch: async () => {
+        if (rimuoviERiaggiungi) {
+          // L'admin cambia il nome mostrato: rimozione + riaggiunta della stessa
+          // chiave mentre il giro e' appeso qui. La lista torna identica, quindi
+          // il solo controllo "e' ancora in lista" non basta.
+          attivo.monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
+          scrivi([{ platform: 'kick', id: 'salvinosalvo', displayName: 'Salvino' }]);
+          attivo.monitor.forget({ platform: 'kick', id: 'salvinosalvo' });
+        }
+        return channel;
+      },
+    },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 1 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  scrivi([{ platform: 'kick', id: 'salvinosalvo' }]);
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    storePath,
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+  attivo.monitor = monitor;
+
+  try {
+    await monitor._tick(); // seed offline
+
+    kickLive = true;
+    rimuoviERiaggiungi = true;
+    await monitor._tick();
+
+    // Account riaggiunto: va solo fotografato, non annunciato.
+    assert.equal(inviati.length, 0);
+  } finally {
+    monitor.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveLiveMention: si spegne il ping solo dicendolo', () => {
+  assert.deepEqual(resolveLiveMention('none'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('NESSUNO'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('off'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('-'), { kind: 'none' });
+  assert.deepEqual(resolveLiveMention('everyone'), { kind: 'everyone' });
+  assert.deepEqual(resolveLiveMention('123456'), { kind: 'role', roleId: '123456' });
+});
+
+test('startLiveMonitor pinga @everyone senza LIVE_ROLE_ID', async () => {
+  const originale = process.env.LIVE_ROLE_ID;
+  delete process.env.LIVE_ROLE_ID;
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    guild: { id: 'guild-1' },
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 2 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick(); // seed offline
+    kickLive = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 1);
+    assert.equal(inviati[0].content, '@everyone');
+    assert.deepEqual(inviati[0].allowedMentions, { parse: ['everyone'] });
+  } finally {
+    monitor.stop();
+    if (originale === undefined) {
+      delete process.env.LIVE_ROLE_ID;
+    } else {
+      process.env.LIVE_ROLE_ID = originale;
+    }
+  }
+});
+
+test('startLiveMonitor non pinga se LIVE_ROLE_ID dice di non pingare', async () => {
+  const originale = process.env.LIVE_ROLE_ID;
+  process.env.LIVE_ROLE_ID = 'none';
+
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  let kickLive = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return kickLive
+        ? { livestream: { session_title: 'Live', viewer_count: 2 }, user: {} }
+        : { livestream: null };
+    },
+  });
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'kick', id: 'salvinosalvo' }],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+    kickLive = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 1);
+    assert.equal(inviati[0].content, undefined);
+    assert.deepEqual(inviati[0].allowedMentions, { parse: [] });
+  } finally {
+    monitor.stop();
+    if (originale === undefined) {
+      delete process.env.LIVE_ROLE_ID;
+    } else {
+      process.env.LIVE_ROLE_ID = originale;
+    }
+  }
+});
+
+test('startLiveMonitor non fa morire di fame Kick quando TikTok e\' lento', async () => {
+  const channel = { isTextBased: () => true, send: async () => {} };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  const interrogati = { tiktok: 0, kick: 0 };
+  let adesso = Date.now();
+  const originalNow = Date.now;
+  Date.now = () => adesso;
+
+  // Ogni richiesta TikTok "costa" 8s di orologio: con i provider in fila
+  // indiana (o con una scadenza sola guardata in sequenza) il tempo finisce
+  // prima che Kick venga interrogato. Lo yield prima di far avanzare
+  // l'orologio serve a modellare richieste che si sovrappongono davvero,
+  // invece di lavoro sincrono.
+  const fetchImpl = async url => {
+    const u = String(url);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    if (u.includes('tiktok')) {
+      interrogati.tiktok += 1;
+      adesso += 8_000;
+      return { ok: true, async json() { return { data: { liveRoom: { status: 4 } } }; } };
+    }
+
+    interrogati.kick += 1;
+    return { ok: true, async json() { return { livestream: null }; } };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [
+      { platform: 'tiktok', id: 'tik_uno' },
+      { platform: 'tiktok', id: 'tik_due' },
+      { platform: 'tiktok', id: 'tik_tre' },
+      { platform: 'kick', id: 'kick-uno' },
+      { platform: 'kick', id: 'kick-due' },
+    ],
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+
+  try {
+    await monitor._tick();
+
+    assert.ok(interrogati.tiktok > 0, 'TikTok deve essere stato interrogato');
+    assert.equal(interrogati.kick, 2, 'Kick deve avere il suo budget, non gli avanzi di TikTok');
+  } finally {
+    Date.now = originalNow;
+    monitor.stop();
+  }
+});
+
+test('startLiveMonitor scarta la risposta Twitch se la voce cambia durante la chiamata', async () => {
+  const inviati = [];
+  const channel = {
+    isTextBased: () => true,
+    send: async payload => {
+      inviati.push(payload);
+    },
+  };
+  const client = {
+    channels: { cache: { get: () => channel }, fetch: async () => channel },
+  };
+
+  const attivo = { monitor: null };
+  let cambiaDurante = false;
+
+  // Twitch chiede tutti i login in una sola volta: se /live rimuove e riaggiunge
+  // la voce mentre quella richiesta e' in volo, la risposta vecchia non descrive
+  // piu' l'account che c'e' ora.
+  const fetchImpl = async url => {
+    const u = String(url);
+
+    if (u.includes('oauth2/token')) {
+      return { ok: true, async json() { return { access_token: 't', expires_in: 3600 }; } };
+    }
+
+    if (u.includes('helix/streams')) {
+      if (cambiaDurante) {
+        attivo.monitor.forget({ platform: 'twitch', id: 'salvinosalvo' });
+        attivo.monitor.forget({ platform: 'twitch', id: 'salvinosalvo' });
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: [{ user_login: 'salvinosalvo', user_name: 'SalvinoSalvo', title: 'Live' }],
+          };
+        },
+      };
+    }
+
+    return { ok: true, status: 200, async json() { return { data: [] }; } };
+  };
+
+  const monitor = startLiveMonitor(client, {
+    channelId: 'chan-1',
+    streamers: [{ platform: 'twitch', id: 'salvinosalvo' }],
+    twitchClientId: 'cid',
+    twitchClientSecret: 'sec',
+    pollIntervalMs: 15_000,
+    fetchImpl,
+    skipInitialTick: true,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+  attivo.monitor = monitor;
+
+  try {
+    cambiaDurante = true;
+    await monitor._tick();
+
+    assert.equal(inviati.length, 0);
+    // La risposta vecchia non deve nemmeno essere entrata nello stato: la voce
+    // riaggiunta riparte pulita al giro successivo.
+    assert.equal(monitor._meta.seeded.has('twitch:salvinosalvo'), false);
+  } finally {
+    monitor.stop();
+  }
 });
