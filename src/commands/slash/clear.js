@@ -1,6 +1,7 @@
 'use strict';
 
 const { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } = require('discord.js');
+const store = require('../../lib/logs-store');
 const { safeDeferReply, safeInteractionReply } = require('../../lib/safe-reply');
 
 // Tetto di sicurezza: 100 messaggi per giro, quindi al massimo 5000 messaggi.
@@ -34,6 +35,30 @@ module.exports = {
     if (!interaction.guild || !channel?.bulkDelete) {
       await safeInteractionReply(interaction, {
         content: 'Questo comando funziona solo in un canale di testo di un server.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // Il permesso predefinito del comando lo possono cambiare gli admin e vale a
+    // livello di server: controlliamo chi lo lancia sul canale, dove valgono
+    // anche gli overwrite (lo staff in sola lettura sui log non puo' svuotarli).
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+      await safeInteractionReply(interaction, {
+        content: 'Ti serve il permesso Gestire i messaggi in questo canale.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // I canali di log sono l'archivio: svuotarli e' riservato agli amministratori.
+    const canaliLog = Object.values(store.getChannels(interaction.guild.id));
+    if (
+      canaliLog.includes(channel.id) &&
+      !interaction.memberPermissions.has(PermissionFlagsBits.Administrator)
+    ) {
+      await safeInteractionReply(interaction, {
+        content: 'Solo un amministratore puo\' svuotare un canale di log.',
         flags: MessageFlags.Ephemeral,
       });
       return;
