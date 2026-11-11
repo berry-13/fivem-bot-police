@@ -684,3 +684,11 @@ test('setup-log non tocca nulla se Discord non accetta l\'ack dell\'interazione'
   assert.equal(store.getChannelId(GUILD_ID, 'voce'), null);
   assert.equal(canale.inviati.length, 0);
 });
+
+test('diagnosticaLog segnala un server senza canali di log configurati', () => {
+  const { diagnosticaLog } = require('../src/lib/logs');
+  const guild = { id: 'g-vuota', name: 'Vuota', channels: { cache: new Map() }, members: { me: {} } };
+  const righe = diagnosticaLog(guild);
+  assert.equal(righe.length, 1);
+  assert.match(righe[0], /Log spenti in Vuota/);
+});

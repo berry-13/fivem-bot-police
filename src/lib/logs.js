@@ -153,6 +153,37 @@ async function sendLog(guild, tipo, payload) {
   }
 }
 
+/**
+ * Righe di stato dei log di un server, per la console all'avvio. Un log spento
+ * perche' lo store e' vuoto non scrive nulla da solo: qui lo rendiamo visibile.
+ */
+function diagnosticaLog(guild) {
+  const righe = [];
+  const canali = store.getChannels(guild.id);
+  const configurati = TIPI.filter(t => canali[t]);
+
+  if (configurati.length === 0) {
+    righe.push(
+      `Log spenti in ${guild.name}: nessun canale configurato in ${store.resolveStorePath()}. ` +
+        'Se prima funzionavano, il volume dati non e\' quello di prima: rilancia /setup-log crea.',
+    );
+    return righe;
+  }
+
+  for (const tipo of configurati) {
+    const channel = guild.channels.cache.get(canali[tipo]);
+    if (!channel?.isTextBased?.()) {
+      righe.push(`Log "${tipo}" in ${guild.name}: il canale ${canali[tipo]} non esiste piu'.`);
+      continue;
+    }
+    const mancanti = missingPermissions(channel, guild.members.me);
+    if (mancanti.length > 0) {
+      righe.push(`Log "${tipo}" in ${guild.name}: al bot mancano in #${channel.name}: ${mancanti.join(', ')}.`);
+    }
+  }
+  return righe;
+}
+
 /** Esegue un logger senza mai propagare errori al gestore dell'evento. */
 async function safely(etichetta, fn) {
   try {
@@ -1054,6 +1085,7 @@ module.exports = {
   buildVoiceCard,
   createLogChannels,
   descriviBersaglio,
+  diagnosticaLog,
   durata,
   findMessageDeleter,
   formattaCambio,

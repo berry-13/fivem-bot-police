@@ -129,6 +129,7 @@ Amministratore.
 | Comando | Chi | Cosa fa |
 | --- | --- | --- |
 | `/ping` | tutti | Latenza del gateway. |
+| `/clear` | Gestire i messaggi | Elimina i messaggi del canale in cui lo lanci (non quelli oltre i 14 giorni). |
 | `/setup-ticket` | admin | Manda il pannello ticket nel canale corrente. |
 | `/setup-bando` | admin | Manda il pannello delle candidature ai reparti. |
 | `/setup-gerarchia` | admin | Manda l'organigramma del reparto, che poi si aggiorna da solo. |

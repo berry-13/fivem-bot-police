@@ -3,6 +3,7 @@
 const { ensureMembersCached } = require('../lib/gerarchia');
 const { startLiveMonitor } = require('../lib/live');
 const { initInviteTracking } = require('../lib/invites');
+const { diagnosticaLog } = require('../lib/logs');
 
 module.exports = {
   name: 'clientReady',
@@ -23,6 +24,11 @@ module.exports = {
               'Verifica che Server Members Intent sia abilitato nel Developer Portal.',
           );
         });
+    }
+
+    // Stato dei log: canali mancanti o permessi persi si vedono subito in console.
+    for (const guild of client.guilds.cache.values()) {
+      for (const riga of diagnosticaLog(guild)) console.warn(riga);
     }
 
     // Foto iniziale degli inviti: senza, il primo ingresso non dice da dove arriva.
