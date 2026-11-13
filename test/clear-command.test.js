@@ -44,11 +44,15 @@ test('svuotaCanale elimina a blocchi scorrendo all\'indietro', async () => {
   assert.deepEqual(canale.fetch, [undefined, 'm00099']);
 });
 
-test('svuotaCanale si ferma ai messaggi piu\' vecchi di 14 giorni', async () => {
-  const vecchio = { id: 'vecchio', createdTimestamp: ora - 15 * 24 * 60 * 60 * 1000 };
-  const canale = fakeCanale([recente(0), recente(1), vecchio]);
-  assert.equal(await clear.svuotaCanale(canale), 2);
-  assert.deepEqual([...canale.vivi.keys()], ['vecchio']);
+test('svuotaCanale elimina uno alla volta i messaggi piu\' vecchi di 14 giorni', async () => {
+  const vecchio = id => ({ id, createdTimestamp: ora - 15 * 24 * 60 * 60 * 1000 });
+  const canale = fakeCanale([recente(0), recente(1), vecchio('v1'), vecchio('v2')]);
+  const bulk = [];
+  const originale = canale.bulkDelete;
+  canale.bulkDelete = async ids => { bulk.push(ids); return originale(ids); };
+  assert.equal(await clear.svuotaCanale(canale), 4);
+  assert.equal(canale.vivi.size, 0);
+  assert.deepEqual(bulk, [['m00000', 'm00001']]);
 });
 
 test('svuotaCanale ignora un messaggio gia\' eliminato (errore 10008)', async () => {

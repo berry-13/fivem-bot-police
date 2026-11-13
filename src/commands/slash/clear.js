@@ -42,8 +42,9 @@ async function eliminaBlocco(channel, ids) {
  * Svuota il canale a blocchi di 100. Si scorre all'indietro con il cursore
  * `before`, cosi' un messaggio appena eliminato che Discord restituisce ancora
  * per qualche istante non viene riletto (era la causa degli errori 10008).
- * I messaggi piu' vecchi di 14 giorni non si possono eliminare in blocco: al
- * primo che si incontra ci si ferma, perche' i successivi sono tutti piu' vecchi.
+ * I messaggi con meno di 14 giorni vanno via in blocco; quelli piu' vecchi
+ * Discord li accetta solo uno alla volta, quindi sono lenti (circa uno al
+ * secondo, il rate limit lo gestisce discord.js).
  */
 async function svuotaCanale(channel) {
   let eliminati = 0;
@@ -54,17 +55,14 @@ async function svuotaCanale(channel) {
     before = blocco.lastKey();
 
     const limite = Date.now() - ETA_MASSIMA_MS;
-    const ids = [];
-    let trovatoVecchio = false;
+    const recenti = [];
+    const vecchi = [];
     for (const [id, message] of blocco) {
-      if (message.createdTimestamp < limite) {
-        trovatoVecchio = true;
-        break;
-      }
-      ids.push(id);
+      (message.createdTimestamp < limite ? vecchi : recenti).push(id);
     }
-    if (ids.length > 0) eliminati += await eliminaBlocco(channel, ids);
-    if (trovatoVecchio || blocco.size < 100) break;
+    if (recenti.length > 0) eliminati += await eliminaBlocco(channel, recenti);
+    for (const id of vecchi) eliminati += await eliminaBlocco(channel, [id]);
+    if (blocco.size < 100) break;
   }
   return eliminati;
 }
@@ -125,7 +123,9 @@ module.exports = {
       return;
     }
 
-    // L'eliminazione puo' richiedere diversi giri: ack subito, risposta privata.
+    // L'eliminazione puo' richiedere diversi giri (e i messaggi vecchi vanno
+    // uno alla volta): ack subito, risposta privata. Oltre i 15 minuti il token
+    // dell'interazione scade e la risposta finale si perde: resta il log.
     if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
 
     let eliminati;
@@ -140,11 +140,9 @@ module.exports = {
       return;
     }
 
+    console.log(`/clear in #${channel.name}: eliminati ${eliminati} messaggi.`);
     await safeInteractionReply(interaction, {
-      content:
-        eliminati === 0
-          ? 'Nessun messaggio da eliminare (Discord non permette di eliminare in blocco quelli piu\' vecchi di 14 giorni).'
-          : `Eliminati ${eliminati} messaggi. Quelli piu' vecchi di 14 giorni restano: Discord non li elimina in blocco.`,
+      content: eliminati === 0 ? 'Nessun messaggio da eliminare.' : `Eliminati ${eliminati} messaggi.`,
       flags: MessageFlags.Ephemeral,
     });
   },
