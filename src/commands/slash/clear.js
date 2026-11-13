@@ -6,18 +6,65 @@ const { safeDeferReply, safeInteractionReply } = require('../../lib/safe-reply')
 
 // Tetto di sicurezza: 100 messaggi per giro, quindi al massimo 5000 messaggi.
 const MAX_GIRI = 50;
+// Discord elimina in blocco solo messaggi con meno di 14 giorni; teniamo un
+// minuto di margine per non mandare un id che scade durante la richiesta.
+const ETA_MASSIMA_MS = 14 * 24 * 60 * 60 * 1000 - 60 * 1000;
+// "Unknown Message": il messaggio e' gia' sparito, che e' quello che volevamo.
+const MESSAGGIO_SCONOSCIUTO = 10008;
+
+function giaEliminato(error) {
+  return error?.code === MESSAGGIO_SCONOSCIUTO;
+}
+
+async function eliminaBlocco(channel, ids) {
+  if (ids.length === 1) {
+    try {
+      await channel.messages.delete(ids[0]);
+      return 1;
+    } catch (error) {
+      if (giaEliminato(error)) return 0;
+      throw error;
+    }
+  }
+  try {
+    await channel.bulkDelete(ids);
+    return ids.length;
+  } catch (error) {
+    if (!giaEliminato(error)) throw error;
+    // Uno degli id non esiste piu': si ripiega sull'eliminazione singola.
+    let eliminati = 0;
+    for (const id of ids) eliminati += await eliminaBlocco(channel, [id]);
+    return eliminati;
+  }
+}
 
 /**
- * Svuota il canale a blocchi di 100. Discord rifiuta di eliminare in blocco i
- * messaggi piu' vecchi di 14 giorni: bulkDelete(..., true) li salta, e quando
- * un giro non elimina nulla ci fermiamo invece di girare a vuoto.
+ * Svuota il canale a blocchi di 100. Si scorre all'indietro con il cursore
+ * `before`, cosi' un messaggio appena eliminato che Discord restituisce ancora
+ * per qualche istante non viene riletto (era la causa degli errori 10008).
+ * I messaggi piu' vecchi di 14 giorni non si possono eliminare in blocco: al
+ * primo che si incontra ci si ferma, perche' i successivi sono tutti piu' vecchi.
  */
 async function svuotaCanale(channel) {
   let eliminati = 0;
+  let before;
   for (let giro = 0; giro < MAX_GIRI; giro++) {
-    const rimossi = await channel.bulkDelete(100, true);
-    if (rimossi.size === 0) break;
-    eliminati += rimossi.size;
+    const blocco = await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 });
+    if (blocco.size === 0) break;
+    before = blocco.lastKey();
+
+    const limite = Date.now() - ETA_MASSIMA_MS;
+    const ids = [];
+    let trovatoVecchio = false;
+    for (const [id, message] of blocco) {
+      if (message.createdTimestamp < limite) {
+        trovatoVecchio = true;
+        break;
+      }
+      ids.push(id);
+    }
+    if (ids.length > 0) eliminati += await eliminaBlocco(channel, ids);
+    if (trovatoVecchio || blocco.size < 100) break;
   }
   return eliminati;
 }

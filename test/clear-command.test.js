@@ -3,26 +3,66 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
+const { Collection } = require('discord.js');
+
 const clear = require('../src/commands/slash/clear');
 
-test('svuotaCanale elimina a blocchi finche\' un giro non rimuove nulla', async () => {
-  const giri = [{ size: 100 }, { size: 40 }, { size: 0 }];
-  const channel = { bulkDelete: async (n, filtro) => {
-    assert.equal(n, 100);
-    assert.equal(filtro, true);
-    return giri.shift();
-  } };
+// Canale finto: `messaggi` va dal piu' recente al piu' vecchio come su Discord.
+function fakeCanale(messaggi, { stantii = [] } = {}) {
+  const vivi = new Map(messaggi.map(m => [m.id, m]));
+  const fetch = [];
+  const canale = {
+    fetch,
+    vivi,
+    messages: {
+      fetch: async ({ limit, before }) => {
+        fetch.push(before);
+        let elenco = messaggi.filter(m => vivi.has(m.id) || stantii.includes(m.id));
+        if (before) elenco = elenco.slice(elenco.findIndex(m => m.id === before) + 1);
+        return new Collection(elenco.slice(0, limit).map(m => [m.id, m]));
+      },
+      delete: async id => {
+        if (!vivi.delete(id)) throw Object.assign(new Error('Unknown Message'), { code: 10008 });
+      },
+    },
+    bulkDelete: async ids => {
+      if (ids.some(id => !vivi.has(id))) throw Object.assign(new Error('Unknown Message'), { code: 10008 });
+      for (const id of ids) vivi.delete(id);
+    },
+  };
+  return canale;
+}
 
-  assert.equal(await clear.svuotaCanale(channel), 140);
-  assert.equal(giri.length, 0);
+const ora = Date.now();
+const recente = i => ({ id: `m${String(i).padStart(5, '0')}`, createdTimestamp: ora - i * 1000 });
+
+test('svuotaCanale elimina a blocchi scorrendo all\'indietro', async () => {
+  const messaggi = Array.from({ length: 140 }, (_, i) => recente(i));
+  const canale = fakeCanale(messaggi);
+  assert.equal(await clear.svuotaCanale(canale), 140);
+  assert.equal(canale.vivi.size, 0);
+  assert.deepEqual(canale.fetch, [undefined, 'm00099']);
+});
+
+test('svuotaCanale si ferma ai messaggi piu\' vecchi di 14 giorni', async () => {
+  const vecchio = { id: 'vecchio', createdTimestamp: ora - 15 * 24 * 60 * 60 * 1000 };
+  const canale = fakeCanale([recente(0), recente(1), vecchio]);
+  assert.equal(await clear.svuotaCanale(canale), 2);
+  assert.deepEqual([...canale.vivi.keys()], ['vecchio']);
+});
+
+test('svuotaCanale ignora un messaggio gia\' eliminato (errore 10008)', async () => {
+  const fantasma = recente(0);
+  const canale = fakeCanale([fantasma, recente(1)], { stantii: [fantasma.id] });
+  canale.vivi.delete(fantasma.id);
+  assert.equal(await clear.svuotaCanale(canale), 1);
+  assert.equal(canale.vivi.size, 0);
 });
 
 test('svuotaCanale si ferma al tetto di sicurezza', async () => {
-  let chiamate = 0;
-  const channel = { bulkDelete: async () => { chiamate++; return { size: 100 }; } };
-
-  assert.equal(await clear.svuotaCanale(channel), 5000);
-  assert.equal(chiamate, 50);
+  const canale = fakeCanale(Array.from({ length: 6000 }, (_, i) => ({ id: `m${String(i).padStart(5, '0')}`, createdTimestamp: ora })));
+  assert.equal(await clear.svuotaCanale(canale), 5000);
+  assert.equal(canale.fetch.length, 50);
 });
 
 test('/clear richiede il permesso Gestire i messaggi', () => {
