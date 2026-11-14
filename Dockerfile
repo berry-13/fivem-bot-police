@@ -20,6 +20,8 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
+# Foto, distintivo e font della card di benvenuto.
+COPY assets ./assets
 
 # Cartella scrivibile per lo stato runtime (es. id del messaggio gerarchia).
 # In compose va montata come volume cosi' sopravvive ai rebuild.
