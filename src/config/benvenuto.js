@@ -17,10 +17,12 @@ module.exports = {
 
   // Frase sulla card, una a caso per ogni ingresso.
   frasi: [
-    'Il rispetto si guadagna un turno alla volta.',
-    'Il distintivo pesa: portalo con onore.',
-    'Disciplina oggi, fiducia domani.',
-    'La differenza la fa chi si presenta, turno dopo turno.',
+    'Occhi aperti. Radio accesa. Si parte.',
+    'La strada non aspetta nessuno.',
+    'Qui non conta chi eri. Conta cosa fai in strada.',
+    'Niente scuse. Solo servizio.',
+    'Allaccia il cinturone, il turno è iniziato.',
+    'Il distintivo si guadagna in strada.',
   ],
 
   footer: "Los Santos Sheriff's Department • Servire e proteggere",
