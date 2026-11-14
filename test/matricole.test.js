@@ -54,3 +54,54 @@ test('permessi: Alto comando o admin', () => {
   assert.equal(matricola.puoUsarlo(fake([], true)), true);
   assert.equal(matricola.puoUsarlo({ member: { roles: ['1527670988769067008'] } }), true);
 });
+
+const { buildBoardContent, refreshMatricoleBoard } = require('../src/lib/matricole-board');
+const configMatricole = require('../src/config/matricole');
+
+test('elenco pubblico: ordinato per numero, vuoto con placeholder', () => {
+  const testo = buildBoardContent({ b: '5000', a: '1200' }, { title: 'T' });
+  assert.equal(testo, 'T\n\n`1200` — <@a>\n`5000` — <@b>');
+  assert.equal(buildBoardContent({}, { title: 'T', emptyPlaceholder: '-' }), 'T\n\n-');
+});
+
+test('elenco pubblico: crea il messaggio, poi lo modifica invece di ripubblicarlo', async () => {
+  const p = tmp();
+  const boardPath = path.join(path.dirname(p), 'board.json');
+  const messaggi = new Map();
+  let n = 0;
+  const canale = {
+    id: configMatricole.boardChannelId,
+    guildId: 'g',
+    isTextBased: () => true,
+    send: async ({ content }) => {
+      const msg = { id: `m${++n}`, content, edit: async ({ content: c }) => { msg.content = c; }, delete: async () => messaggi.delete(msg.id) };
+      messaggi.set(msg.id, msg);
+      return msg;
+    },
+    messages: {
+      fetch: async id => {
+        if (!messaggi.has(id)) throw Object.assign(new Error('Unknown Message'), { code: 10008 });
+        return messaggi.get(id);
+      },
+    },
+  };
+  const client = { channels: { fetch: async () => canale } };
+
+  store.assign('g', 'u1', p, () => 0);
+  await refreshMatricoleBoard(client, 'g', { storePath: p, boardPath });
+  assert.equal(messaggi.size, 1);
+  assert.match(messaggi.get('m1').content, /`1000` — <@u1>/);
+
+  store.assign('g', 'u2', p, () => 0);
+  await refreshMatricoleBoard(client, 'g', { storePath: p, boardPath });
+  assert.equal(messaggi.size, 1);
+  assert.match(messaggi.get('m1').content, /`1001` — <@u2>/);
+
+  // Messaggio cancellato a mano: ne pubblica uno nuovo e salva il nuovo id.
+  messaggi.clear();
+  await refreshMatricoleBoard(client, 'g', { storePath: p, boardPath });
+  assert.deepEqual(store.getBoard('g', boardPath).messageIds, ['m2']);
+
+  // Canale di un altro server: non tocca niente.
+  assert.equal(await refreshMatricoleBoard(client, 'altro', { storePath: p, boardPath }), null);
+});

@@ -4,6 +4,7 @@ const { ensureMembersCached } = require('../lib/gerarchia');
 const { startLiveMonitor } = require('../lib/live');
 const { initInviteTracking } = require('../lib/invites');
 const { diagnosticaLog } = require('../lib/logs');
+const { refreshMatricoleBoard } = require('../lib/matricole-board');
 
 module.exports = {
   name: 'clientReady',
@@ -36,6 +37,12 @@ module.exports = {
       initInviteTracking(guild).catch(error => {
         console.warn(`Tracciamento inviti non avviato per ${guild.name}: ${error.message}`);
       });
+    }
+
+    // Elenco pubblico delle matricole: lo crea al primo avvio e lo riallinea
+    // se il file e' stato modificato a mano mentre il bot era spento.
+    for (const guild of client.guilds.cache.values()) {
+      refreshMatricoleBoard(client, guild.id);
     }
 
     // Notifiche quando gli streamer di config/live.js vanno in live (Twitch/TikTok).

@@ -99,3 +99,41 @@ module.exports = {
   normalizzaNumero,
   resolveStorePath,
 };
+
+// Id dei messaggi dell'elenco pubblico, in un file a parte cosi' la forma di
+// matricole.json resta { [guildId]: { [userId]: numero } }.
+// Forma: { [guildId]: { channelId, messageIds: string[] } }
+const BOARD_DEFAULT_PATH = path.join(process.cwd(), 'data', 'matricole-board.json');
+
+function resolveBoardPath(customPath) {
+  return customPath || process.env.MATRICOLE_BOARD_PATH || BOARD_DEFAULT_PATH;
+}
+
+function getBoard(guildId, boardPath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(resolveBoardPath(boardPath), 'utf8'));
+    const board = data?.[guildId];
+    if (board?.channelId && Array.isArray(board.messageIds)) {
+      return { channelId: String(board.channelId), messageIds: board.messageIds.map(String) };
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn(`Board matricole illeggibile: ${error.message}`);
+  }
+  return null;
+}
+
+function setBoard(guildId, board, boardPath) {
+  const filePath = resolveBoardPath(boardPath);
+  let data = {};
+  try {
+    data = JSON.parse(fs.readFileSync(filePath, 'utf8')) || {};
+  } catch {
+    // Assente o rotto: lo riscriviamo, perdiamo solo gli id dei messaggi.
+  }
+  data[guildId] = { channelId: String(board.channelId), messageIds: board.messageIds.map(String) };
+  saveStore(data, filePath);
+}
+
+module.exports.getBoard = getBoard;
+module.exports.setBoard = setBoard;
+module.exports.BOARD_DEFAULT_PATH = BOARD_DEFAULT_PATH;

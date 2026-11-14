@@ -3,6 +3,7 @@
 const { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } = require('discord.js');
 const config = require('../../config/matricole');
 const store = require('../../lib/matricole-store');
+const { refreshMatricoleBoard } = require('../../lib/matricole-board');
 const { safeInteractionReply } = require('../../lib/safe-reply');
 
 const PRIVATO = { flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } };
@@ -45,6 +46,8 @@ async function genera(interaction) {
     content: `✅ Matricola **${result.numero}** assegnata a ${utente}.`,
     ...PRIVATO,
   });
+  // Dopo la risposta: l'elenco pubblico non deve far scadere l'interazione.
+  await refreshMatricoleBoard(interaction.client, interaction.guild.id);
 }
 
 async function cerca(interaction) {
