@@ -26,4 +26,19 @@ module.exports = {
   ],
 
   footer: "Los Santos Sheriff's Department • Servire e proteggere",
+
+  // Messaggio per chi esce dal server: stessa card, altro titolo e frasi.
+  arrivederci: {
+    // 📌・ᴀʀʀɪᴠᴇᴅᴇʀᴄɪ
+    channelId: '1527655500773195788',
+    titolo: 'ARRIVEDERCI',
+    frasi: [
+      'End of watch.',
+      'Badge turned in. Legacy stays.',
+      'The road goes on. So do we.',
+      'Clocked out. The desert remembers.',
+      "Drive safe out there. We'll hold the line.",
+      'Last patrol done. Respect earned.',
+    ],
+  },
 };

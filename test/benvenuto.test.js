@@ -69,3 +69,39 @@ test('guildMemberAdd non si blocca se il benvenuto fallisce', async () => {
   member.guild.channels.cache = { get: () => { throw new Error('boom'); } };
   await guildMemberAdd.execute(member);
 });
+
+const { messaggioArrivederci, inviaArrivederci } = require('../src/lib/benvenuto');
+
+test('arrivederci: card col titolo giusto, nessun ping, nome in chiaro', async () => {
+  const { member } = fakeMember();
+  member.user.username = 'mario';
+  member.displayName = '5005 | Mario Rossi';
+  const msg = await messaggioArrivederci(member);
+  assert.deepEqual(msg.allowedMentions, { parse: [] });
+  assert.equal(msg.content, undefined);
+  const embed = msg.embeds[0].toJSON();
+  assert.match(embed.description, /\*\*5005 \| Mario Rossi\*\* \(@mario\)/);
+  assert.equal(embed.image.url, 'attachment://benvenuto.jpg');
+  assert.ok(isJpeg(msg.files[0].attachment));
+  for (const f of config.arrivederci.frasi) assert.ok(isJpeg(await disegnaCard({ frase: f, titolo: config.arrivederci.titolo })));
+});
+
+test('arrivederci: va nel suo canale, mai per i bot', async () => {
+  const inviati = [];
+  const channel = {
+    name: 'arrivederci',
+    isTextBased: () => true,
+    permissionsFor: () => ({ missing: () => [] }),
+    send: async p => inviati.push(p),
+  };
+  const member = {
+    user: { id: '7', username: 'x', bot: false },
+    displayName: 'x',
+    guild: { name: 'LSSD', iconURL: () => null, members: { me: {} }, channels: { cache: new Map([[config.arrivederci.channelId, channel]]) } },
+  };
+  await inviaArrivederci(member);
+  assert.equal(inviati.length, 1);
+  member.user.bot = true;
+  assert.equal(await inviaArrivederci(member), null);
+  assert.equal(inviati.length, 1);
+});

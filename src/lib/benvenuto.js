@@ -102,10 +102,10 @@ function dueRigheBilanciate(ctx, testo, maxW) {
 /**
  * Card di benvenuto: foto dell'auto dello sceriffato, motto del reparto e
  * frase motivazionale. Uguale per tutti, cambia solo la frase.
- * @param {{ frase: string }} dati
+ * @param {{ frase: string, titolo?: string }} dati
  * @returns {Promise<Buffer>} JPEG
  */
-async function disegnaCard({ frase }) {
+async function disegnaCard({ frase, titolo = 'BENVENUTO' }) {
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
   const [img, badge] = await Promise.all([caricaFoto(), caricaDistintivo()]);
@@ -165,7 +165,7 @@ async function disegnaCard({ frase }) {
 
   ctx.font = '700 26px Cinzel';
   ctx.fillStyle = gradienteOro(ctx, x, 0, x + 260, 0);
-  testoSpaziato(ctx, 'BENVENUTO', x, y - size - 18, 8);
+  testoSpaziato(ctx, titolo, x, y - size - 18, 8);
 
   ctx.font = `600 ${size + 2}px Oswald`;
   ctx.fillStyle = '#ffffff';
@@ -185,8 +185,8 @@ async function disegnaCard({ frase }) {
   return canvas.encode('jpeg', 88);
 }
 
-function scegliFrase(random = Math.random) {
-  return config.frasi[Math.floor(random() * config.frasi.length)];
+function scegliFrase(random = Math.random, frasi = config.frasi) {
+  return frasi[Math.floor(random() * frasi.length)];
 }
 
 /**
@@ -226,24 +226,68 @@ const PERMESSI = [
   PermissionFlagsBits.AttachFiles,
 ];
 
-async function inviaBenvenuto(member) {
-  if (member.user.bot) return null;
-  const channel = member.guild.channels.cache.get(config.channelId);
+/** Canale pronto a ricevere la card, o null (con un avviso in console). */
+function canalePronto(member, channelId, etichetta) {
+  const channel = member.guild?.channels?.cache?.get(channelId);
   if (!channel?.isTextBased?.()) {
-    console.warn(`Benvenuto: canale ${config.channelId} non trovato o non testuale.`);
+    console.warn(`${etichetta}: canale ${channelId} non trovato o non testuale.`);
     return null;
   }
   const mancanti = channel.permissionsFor?.(member.guild.members.me)?.missing(PERMESSI) ?? [];
   if (mancanti.length > 0) {
-    console.warn(`Benvenuto: al bot mancano i permessi in #${channel.name}: ${mancanti.join(', ')}.`);
+    console.warn(`${etichetta}: al bot mancano i permessi in #${channel.name}: ${mancanti.join(', ')}.`);
     return null;
   }
+  return channel;
+}
+
+async function inviaBenvenuto(member) {
+  if (member.user.bot) return null;
+  const channel = canalePronto(member, config.channelId, 'Benvenuto');
+  if (!channel) return null;
   return channel.send(await messaggioBenvenuto(member));
+}
+
+/**
+ * Messaggio per chi ha lasciato il server. Niente ping: non e' piu' qui e
+ * la menzione mostrerebbe solo un id; si scrive il nome.
+ * @param {import('discord.js').GuildMember} member
+ */
+async function messaggioArrivederci(member) {
+  const cfg = config.arrivederci;
+  const user = member.user;
+  const jpg = await disegnaCard({ frase: scegliFrase(Math.random, cfg.frasi), titolo: cfg.titolo });
+  const nome = member.displayName ?? user.globalName ?? user.username;
+  const chi = nome && nome !== user.username ? `**${nome}** (@${user.username})` : `**@${user.username}**`;
+
+  const embed = new EmbedBuilder()
+    .setColor(config.color)
+    .setAuthor({ name: member.guild.name, iconURL: member.guild.iconURL() ?? undefined })
+    .setTitle('Fine del servizio')
+    .setDescription(`${chi} ha lasciato il Dipartimento.`)
+    .setImage(`attachment://${NOME_FILE}`)
+    .setFooter({ text: config.footer })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    files: [new AttachmentBuilder(jpg, { name: NOME_FILE })],
+    allowedMentions: { parse: [] },
+  };
+}
+
+async function inviaArrivederci(member) {
+  if (!member?.user || member.user.bot) return null;
+  const channel = canalePronto(member, config.arrivederci.channelId, 'Arrivederci');
+  if (!channel) return null;
+  return channel.send(await messaggioArrivederci(member));
 }
 
 module.exports = {
   disegnaCard,
+  inviaArrivederci,
   inviaBenvenuto,
+  messaggioArrivederci,
   scegliFrase,
   messaggioBenvenuto,
 };
