@@ -110,21 +110,26 @@ async function disegnaCard({ frase }) {
   const ctx = canvas.getContext('2d');
   const [img, badge] = await Promise.all([caricaFoto(), caricaDistintivo()]);
 
-  copri(ctx, img, W, H, 0.48, 0.47);
+  copri(ctx, img, W, H, 0.5, 0.5);
 
-  // Velatura blu notte: in alto per l'intestazione, piu' forte in basso per
-  // la frase. L'auto al centro resta leggibile.
-  const alto = ctx.createLinearGradient(0, 0, 0, H * 0.35);
-  alto.addColorStop(0, 'rgba(8,14,28,0.85)');
+  // Velatura blu notte da sinistra: li' stanno intestazione e frase, mentre
+  // l'auto a destra resta pulita. Un filo di scuro anche in alto e in basso.
+  const sinistra = ctx.createLinearGradient(0, 0, W * 0.68, 0);
+  sinistra.addColorStop(0, 'rgba(8,14,28,0.88)');
+  sinistra.addColorStop(0.55, 'rgba(8,14,28,0.55)');
+  sinistra.addColorStop(1, 'rgba(8,14,28,0)');
+  ctx.fillStyle = sinistra;
+  ctx.fillRect(0, 0, W, H);
+  const alto = ctx.createLinearGradient(0, 0, 0, H * 0.3);
+  alto.addColorStop(0, 'rgba(8,14,28,0.55)');
   alto.addColorStop(1, 'rgba(8,14,28,0)');
   ctx.fillStyle = alto;
-  ctx.fillRect(0, 0, W, H * 0.35);
-  const basso = ctx.createLinearGradient(0, H * 0.45, 0, H);
+  ctx.fillRect(0, 0, W, H * 0.3);
+  const basso = ctx.createLinearGradient(0, H * 0.7, 0, H);
   basso.addColorStop(0, 'rgba(8,14,28,0)');
-  basso.addColorStop(0.55, 'rgba(8,14,28,0.82)');
-  basso.addColorStop(1, 'rgba(8,14,28,0.96)');
+  basso.addColorStop(1, 'rgba(8,14,28,0.6)');
   ctx.fillStyle = basso;
-  ctx.fillRect(0, H * 0.45, W, H * 0.55);
+  ctx.fillRect(0, H * 0.7, W, H * 0.3);
 
   const x = 56;
   ctx.textBaseline = 'alphabetic';
@@ -136,7 +141,8 @@ async function disegnaCard({ frase }) {
   testoSpaziato(ctx, "LOS SANTOS SHERIFF'S DEPARTMENT", x + 64, 64, 5);
 
   // Frase, grande, al massimo due righe.
-  const maxW = W - x * 2;
+  // Colonna di sinistra: la frase non deve finire sopra l'auto.
+  const maxW = 640;
   // Prima si prova su una riga rimpicciolendo un po'; se non basta, due righe
   // bilanciate (niente parola orfana sotto).
   let size = 58;

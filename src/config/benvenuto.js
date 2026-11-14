@@ -17,12 +17,12 @@ module.exports = {
 
   // Frase sulla card, una a caso per ogni ingresso.
   frasi: [
-    'Occhi aperti. Radio accesa. Si parte.',
-    'La strada non aspetta nessuno.',
-    'Qui non conta chi eri. Conta cosa fai in strada.',
-    'Niente scuse. Solo servizio.',
-    'Allaccia il cinturone, il turno è iniziato.',
-    'Il distintivo si guadagna in strada.',
+    "The desert doesn't forgive. Neither do we.",
+    "Sandy Shores sleeps because we don't.",
+    'Badge on. Mercy off.',
+    "We don't chase trouble. Trouble pulls over.",
+    'Quiet county. Loud consequences.',
+    'Lights on. Eyes up. Earn the star.',
   ],
 
   footer: "Los Santos Sheriff's Department • Servire e proteggere",
