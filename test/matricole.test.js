@@ -50,6 +50,7 @@ test('permessi: Alto comando o admin', () => {
   });
   assert.equal(matricola.puoUsarlo(fake(['1527671086928498699'])), true);
   assert.equal(matricola.puoUsarlo(fake(['1527670632647495831'])), true);
+  assert.equal(matricola.puoUsarlo(fake(['1527673537064861828'])), true);
   assert.equal(matricola.puoUsarlo(fake(['1527671588655333376'])), false);
   assert.equal(matricola.puoUsarlo(fake([], true)), true);
   assert.equal(matricola.puoUsarlo({ member: { roles: ['1527670988769067008'] } }), true);
