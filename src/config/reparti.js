@@ -12,6 +12,66 @@ module.exports = {
   emptyPlaceholder: '//',
 
   boards: [
+    // L'ordine conta: le liste nuove vengono pubblicate in quest'ordine.
+    {
+      key: 'operativi',
+      channelId: '1528106291376164934', // 📌・ʀᴇꜱᴘᴏɴꜱᴀʙɪʟɪ_ᴅɪ_ʀᴇᴘᴀʀᴛᴏ
+      title: '# **REPARTI OPERATIVI**',
+      groups: [
+        // SERT
+        {
+          roles: [
+            '1527676406534901820', // Capo Reparto
+            '1527676351451238430', // Vice Capo Reparto
+            '1527676233935093800', // Esaminatore
+            '1527675834792415352', // Istruttore
+          ],
+          footer: '1527675711932862576',
+        },
+        // HSU
+        {
+          roles: [
+            '1527679810229506198',
+            '1527679751827882174',
+            '1527679656956788888',
+            '1527679714301579366',
+          ],
+          footer: '1528393406383128666', // Brevetto HSU
+        },
+        // Elicotteristi
+        {
+          roles: [
+            '1527681771519606825',
+            '1527681772001693867',
+            '1527681772756664511',
+            '1527681784815423589',
+          ],
+          footer: '1528393407096033341', // Brevetto Elicottero
+        },
+        // Mary
+        {
+          roles: [
+            '1528389292672684142',
+            '1528389293368803358',
+            '1528389294262321272',
+            '1528389294782156950',
+          ],
+          footer: '1528393411395059775', // Brevetto Mary
+        },
+        // Diportista
+        {
+          roles: [
+            '1528391610688077844',
+            '1528391616925143080',
+            '1528391617289912510',
+            '1528391657886711808',
+          ],
+          footer: '1528393908889981058', // Brevetto Diportista
+        },
+        // EMS: solo brevetto
+        { roles: [], footer: '1545098838501621980' },
+      ],
+    },
     {
       key: 'logistici',
       channelId: '1528106291376164934', // 📌・ʀᴇꜱᴘᴏɴꜱᴀʙɪʟɪ_ᴅɪ_ʀᴇᴘᴀʀᴛᴏ

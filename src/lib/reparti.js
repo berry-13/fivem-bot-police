@@ -47,7 +47,7 @@ function getBoard(guildId, key, storePath) {
 }
 
 function boardRoleIds(board) {
-  return new Set(board.groups.flatMap(g => [...g.roles, ...(g.footer ? [g.footer] : [])]).map(String));
+  return new Set(board.groups.flatMap(g => [...(g.roles ?? []), ...(g.footer ? [g.footer] : [])]).map(String));
 }
 
 /** Tutti i ruoli che compaiono in almeno una lista dei reparti. */
@@ -68,7 +68,10 @@ function buildRepartoContent(guild, board, options = {}) {
   if (board.title) blocks.push(board.title, separator);
 
   board.groups.forEach((group, i) => {
-    blocks.push(group.roles.map(roleId => roleLine(guild, roleId, emptyPlaceholder)).join('\n'));
+    // Un gruppo puo' avere solo il ruolo di reparto (es. Brevetto EMS).
+    if (group.roles?.length) {
+      blocks.push(group.roles.map(roleId => roleLine(guild, roleId, emptyPlaceholder)).join('\n'));
+    }
     if (group.footer) blocks.push(`- <@&${group.footer}>`);
     if (i < board.groups.length - 1) blocks.push(separator);
   });

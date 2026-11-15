@@ -102,6 +102,12 @@ test('buildRepartoContent: stesso formato dei messaggi a mano', () => {
   );
 });
 
+test('buildRepartoContent: gruppo con solo il ruolo di reparto', () => {
+  const guild = makeGuild({});
+  const board = { title: '', groups: [{ roles: ['r1'] }, { roles: [], footer: 'f9' }] };
+  assert.equal(buildRepartoContent(guild, board), ['- <@&r1> //', config.separator, '- <@&f9>'].join('\n\n'));
+});
+
 test('refreshReparti: pubblica la prima volta, poi edita lo stesso messaggio', async () => {
   const channel = makeChannel();
   const client = { channels: { fetch: async () => channel } };
