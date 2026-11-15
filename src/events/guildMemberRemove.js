@@ -6,6 +6,7 @@ const {
 } = require('../lib/gerarchia');
 const { logMemberLeave, safely } = require('../lib/logs');
 const { inviaArrivederci } = require('../lib/benvenuto');
+const { memberHasRepartoRole, scheduleRepartiRefresh } = require('../lib/reparti');
 
 module.exports = {
   name: 'guildMemberRemove',
@@ -15,8 +16,8 @@ module.exports = {
     // Anche il messaggio di arrivederci va per conto suo.
     safely('arrivederci', () => inviaArrivederci(member));
 
-    // Se chi esce aveva un grado del reparto, togliamolo dalla lista.
-    if (!memberHasHierarchyRole(member)) return;
-    scheduleHierarchyRefresh(member.guild);
+    // Se chi esce aveva un grado o un ruolo di reparto, togliamolo dalle liste.
+    if (memberHasHierarchyRole(member)) scheduleHierarchyRefresh(member.guild);
+    if (memberHasRepartoRole(member)) scheduleRepartiRefresh(member.guild);
   },
 };

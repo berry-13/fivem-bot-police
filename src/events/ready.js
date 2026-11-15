@@ -5,6 +5,7 @@ const { startLiveMonitor } = require('../lib/live');
 const { initInviteTracking } = require('../lib/invites');
 const { diagnosticaLog } = require('../lib/logs');
 const { refreshMatricoleBoard } = require('../lib/matricole-board');
+const { refreshReparti } = require('../lib/reparti');
 
 module.exports = {
   name: 'clientReady',
@@ -43,6 +44,12 @@ module.exports = {
     // se il file e' stato modificato a mano mentre il bot era spento.
     for (const guild of client.guilds.cache.values()) {
       refreshMatricoleBoard(client, guild.id);
+    }
+
+    // Liste dei reparti (config/reparti.js): come per le matricole, al primo
+    // avvio le pubblica e poi le riallinea ai ruoli attuali.
+    for (const guild of client.guilds.cache.values()) {
+      refreshReparti(guild);
     }
 
     // Notifiche quando gli streamer di config/live.js vanno in live (Twitch/TikTok).
